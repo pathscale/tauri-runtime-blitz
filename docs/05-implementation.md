@@ -143,12 +143,13 @@ session, then shut down cleanly without fixed sleeps. The transport also rejects
 binds, publishes a 0600 atomic descriptor, bounds command replies, and does not block when its
 single renderer queue is full. Python was deliberately unavailable for the complete test run.
 
-This is not the complete Stage 1.5 gate. JavaScript execution, timer-backed asynchronous
-execution, console records, and deliberate exception retrieval now pass from the external
-process. Pointer event tracing now verifies that Solid's delegated click path includes the
-document, and focused text entry passes through the real input path. Computed style, broader
-actions, and the remaining standard WebDriver commands still need implementation and external
-assertions. Do not mark Stage 1.5 passed until those rows in `06-debug-control.md` are exercised.
+### Stage 1.5 measured result (2026-08-09)
+
+**PASS.** Commit `30ffb7b9` completes the inspection/action surface and expands the external
+test across every acceptance step in `06-debug-control.md`. It verifies the full Solid fixture,
+computed style, layout and renderer metrics, pointer and keyboard actions, stale references,
+changed screenshot pixels, runtime diagnostics, reconnect, and clean descriptor removal. The
+complete suite passes with Python deliberately unavailable.
 
 ## Stage 2 -- CSS conformance
 

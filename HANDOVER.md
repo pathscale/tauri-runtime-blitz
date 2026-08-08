@@ -35,7 +35,7 @@ a JIT.
 - Repos needed: 1 new (`tauri-runtime-blitz`), 1 fork (`blitz-rust`). Plus changes to
   `agencyzero` and `@pathscale/ui`, both owned by us.
 
-## Current task: Stage 1.5
+## Current task: Stage 2
 
 Stage 1 passed on 2026-08-09. Do not rerun or reinterpret it as Tauri runtime success. The
 measured result and commands are in `docs/05-implementation.md`. The relevant local Blitz
@@ -50,17 +50,15 @@ commits are:
   including external retrieval of a deliberate Boa exception and stack.
 - `a79b9ba7` -- pointer-path traces through the document, remote text input through the real
   IME path, and the empty-input initialization fix exposed by that test.
+- `30ffb7b9` -- complete standard inspection/actions surface and a passing full Stage 1.5
+  separate-process acceptance test.
 
 The pushed Stylo fork is <https://github.com/pathscale/stylo-less-py>. It is based on the exact
 Stylo revision Blitz previously pinned, so the change does not include unrelated CSS updates.
 
-Complete the remaining **Stage 1.5** surface from `docs/06-debug-control.md` before CSS or
-full-app work. The first external-control slice has passed, but the stage is not complete. The
-port needs a reliable external control channel from the beginning. It is a
-debug-only, loopback W3C WebDriver-compatible server with Blitz diagnostics and an explicit
-settled-frame barrier. If an external process cannot discover, authenticate, interact,
-inspect, capture, disconnect, and reconnect to the Solid probe, stop and fix the control
-plane rather than continuing with ad hoc logs.
+Stage 1.5 passed on 2026-08-09; its measured results are in `docs/06-debug-control.md`. Begin
+the Stage 2 CSS corpus and screenshot diff in `docs/05-implementation.md`. Do not begin the
+Tauri runtime crate before Stage 2 and the full-bundle headless Stage 3 gate pass.
 
 ## Constraints
 

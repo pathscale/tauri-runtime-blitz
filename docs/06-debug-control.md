@@ -163,10 +163,11 @@ revision, and queue conditions; fixed delays are not an acceptable synchronizati
 Failure means stop and repair this channel before Stage 2. Without it, later renderer and
 runtime failures cannot be investigated reliably by an external agent.
 
-### Measured partial result (2026-08-09)
+### Measured result (2026-08-09)
 
-Blitz commits `80881334`, `17b2350f`, and `a79b9ba7` implement and verify the transport
-boundary, first probe commands, runtime diagnostics, and input tracing:
+**PASS.** Blitz commits `80881334`, `17b2350f`, `a79b9ba7`, and `30ffb7b9` implement and
+verify the transport boundary, runtime diagnostics, input tracing, standard commands, and the
+complete separate-process acceptance gate:
 
 - loopback-only HTTP, random 256-bit token, atomic 0600 descriptor, bounded request size and
   response timeout, one serialized renderer queue, and clean shutdown;
@@ -180,11 +181,17 @@ boundary, first probe commands, runtime diagnostics, and input tracing:
 - synchronous and timer-backed asynchronous JavaScript execution, bounded ordered console
   records, and bounded ordered uncaught-error records with a retained Boa stack;
 - pointer hit-test tracing with the full node chain through the document, plus focused text
-  entry through Blitz's IME/input event path.
+  entry through Blitz's IME/input event path;
+- attributes, properties, displayed/enabled state, focus, window selection, computed style,
+  layout tree, renderer metrics, viewport pointer actions, and keyboard actions;
+- full Solid transitions through signals, effect logs, `<Show>`, and `<For>`, with DOM,
+  layout, style, paint, and changed PNG evidence correlated after explicit idle barriers;
+- detached reference rejection, deliberate exception retrieval, session reconnect, clean
+  process shutdown, and descriptor removal.
 
-That test passed with Python unavailable and all existing DOM, Preact, Solid, and doctests also
-passing. This remains a headless Blitz result. Broader input actions, computed style, and the
-other unimplemented commands listed above keep the Stage 1.5 gate open.
+The test uses no fixed sleeps. It passed with Python unavailable, alongside all existing DOM,
+Preact, Solid, transport, and doctests. This remains a headless Blitz result, not a Tauri
+runtime result, but Stage 2 may now begin.
 
 ## Growth after the gate
 
