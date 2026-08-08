@@ -35,7 +35,7 @@ a JIT.
 - Repos needed: 1 new (`tauri-runtime-blitz`), 1 fork (`blitz-rust`). Plus changes to
   `agencyzero` and `@pathscale/ui`, both owned by us.
 
-## Current task: Stage 2
+## Current task: Stage 3
 
 Stage 1 passed on 2026-08-09. Do not rerun or reinterpret it as Tauri runtime success. The
 measured result and commands are in `docs/05-implementation.md`. The relevant local Blitz
@@ -56,9 +56,9 @@ commits are:
 The pushed Stylo fork is <https://github.com/pathscale/stylo-less-py>. It is based on the exact
 Stylo revision Blitz previously pinned, so the change does not include unrelated CSS updates.
 
-Stage 1.5 passed on 2026-08-09; its measured results are in `docs/06-debug-control.md`. Begin
-the Stage 2 CSS corpus and screenshot diff in `docs/05-implementation.md`. Do not begin the
-Tauri runtime crate before Stage 2 and the full-bundle headless Stage 3 gate pass.
+Stages 1.5 and 2 passed on 2026-08-09; measured results are in `docs/06-debug-control.md` and
+`docs/07-css-conformance.md`. Begin the full-bundle headless Stage 3 gate from
+`docs/05-implementation.md`. Do not begin the Tauri runtime crate before Stage 3 passes.
 
 ## Constraints
 

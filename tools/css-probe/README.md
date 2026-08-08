@@ -17,5 +17,10 @@ packed JavaScript artifact, so capture its settled DOM and CSS from the browser 
 asking Blitz to run the packer. This keeps Stage 2 focused on CSS/style/layout; running the real
 application JavaScript is the Stage 3 gate.
 
+An optional final `RRGGBB` argument composites transparent renderer pixels over a known browser
+canvas color. Keep both raw and composited results when using it: missing body-to-canvas
+background propagation is itself a renderer gap, while the composited result isolates the rest
+of the style and layout comparison.
+
 Cargo output is shared with `../blitz-rust/target` through the repository `.cargo/config.toml`
 to avoid a duplicate multi-gigabyte target directory.

@@ -153,6 +153,11 @@ complete suite passes with Python deliberately unavailable.
 
 ## Stage 2 -- CSS conformance
 
+Stage 2 passed as a viability gate on 2026-08-09. See `07-css-conformance.md` for the two
+1344×900 Chromium/Blitz comparisons, numerical thresholds, feature-by-feature results, and
+bounded renderer gaps. The current compiled CSS counts are newer than the initial estimates
+below.
+
 ### 2.1 Produce the corpus
 
 ```sh
