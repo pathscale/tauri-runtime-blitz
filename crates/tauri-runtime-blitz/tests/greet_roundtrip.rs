@@ -52,12 +52,13 @@ fn real_tauri_greet_response_reaches_boa() {
     document.execute_scripts();
 
     let queue = ScriptQueue::default();
+    queue.attach_to(&mut document);
     let response_json = serde_json::to_string(&response).unwrap();
     queue.enqueue(format!(
         "window.__TAURI_INTERNALS__.runCallback(7, {response_json})"
     ));
 
-    assert_eq!(queue.drain_into(&mut document), 1);
+    assert!(document.poll(None));
     let inner = document.inner();
     let result = inner.query_selector("#result").unwrap().unwrap();
     assert_eq!(

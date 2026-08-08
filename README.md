@@ -22,9 +22,11 @@ interactive under Boa, and a signed 32 MB native CPU-rendered preview launches f
 configuration, strips the published trait crate's unused WebKit linkage, and forwards Boa's
 `window.ipc.postMessage` into Tauri's existing IPC handler. Its webview dispatcher now queues
 Tauri response scripts and callback evaluations onto Boa's document thread. A headless test passes
-a real `#[tauri::command]` `greet` response through that queue and observes it in the Boa DOM. The
-next gate is constructing this dispatcher from Tauri's pending webview and draining it from the
-native event loop.
+a real `#[tauri::command]` `greet` response through that queue and observes it in the Boa DOM.
+`prepare_pending_webview` now applies Tauri initialization scripts, attaches IPC, constructs the
+dispatcher, and installs queue draining and wakeups into the native Blitz document poll cycle. The
+next gate is calling that preparation path from a concrete `Runtime::create_webview` implementation
+and registering its document with the native Blitz window.
 
 ## Docs
 

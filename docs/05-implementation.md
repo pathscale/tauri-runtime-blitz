@@ -239,13 +239,17 @@ Stage 3 passed on 2026-08-09. Order within Stage 4:
   document. A headless integration test dispatches a real `#[tauri::command]` `greet` through
   Tauri, serializes its response, evaluates the callback in Boa, and observes `Hello, Boa!` in the
   DOM.
+- `prepare_pending_webview` consumes Tauri's pending initialization scripts and IPC handler,
+  constructs the detached dispatcher, and attaches its queue to `ScriptDocument::poll`. Enqueuing
+  work from another thread wakes the native event loop; the next document poll drains it before
+  requesting a redraw.
 - A minimal binary proved that published `tauri-runtime` adds an otherwise-unused WebKit load
   command on macOS. `-Wl,-dead_strip_dylibs` removes it without a Tauri fork; the committed link
   check fails on WebKit, `libc++`, or Python.
 
-Next gate: construct the dispatcher from Tauri's pending webview, attach the IPC handler there,
-and drain its queue from the native event loop before exposing the rest of AgencyZero's command
-table.
+Next gate: implement the concrete runtime's `create_webview` path with this preparation helper and
+register the resulting document with the native Blitz window before exposing the rest of
+AgencyZero's command table.
 
 Reference implementation for the trait surface: `versotile-org/tauri-runtime-verso` (archived,
 but it is the only prior art for a non-wry Tauri runtime). Pin an exact Tauri version;

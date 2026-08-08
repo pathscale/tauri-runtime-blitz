@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::{Arc, Mutex};
+use std::task::{Context as TaskContext, Waker};
 
 use blitz_script::ScriptDocument;
 
@@ -17,9 +18,15 @@ enum ScriptTask {
     RunOnDocumentThread(DocumentTask),
 }
 
+#[derive(Default)]
+struct ScriptQueueState {
+    tasks: VecDeque<ScriptTask>,
+    waker: Option<Waker>,
+}
+
 /// Queue shared by the thread-safe webview dispatcher and the Boa document thread.
 #[derive(Clone, Default)]
-pub struct ScriptQueue(Arc<Mutex<VecDeque<ScriptTask>>>);
+pub struct ScriptQueue(Arc<Mutex<ScriptQueueState>>);
 
 impl fmt::Debug for ScriptQueue {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -31,11 +38,19 @@ impl fmt::Debug for ScriptQueue {
 }
 
 impl ScriptQueue {
+    fn push(&self, task: ScriptTask) {
+        let waker = {
+            let mut state = self.0.lock().unwrap();
+            state.tasks.push_back(task);
+            state.waker.clone()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
     pub fn enqueue(&self, script: impl Into<String>) {
-        self.0
-            .lock()
-            .unwrap()
-            .push_back(ScriptTask::Evaluate(script.into()));
+        self.push(ScriptTask::Evaluate(script.into()));
     }
 
     pub fn enqueue_with_callback(
@@ -43,28 +58,43 @@ impl ScriptQueue {
         script: impl Into<String>,
         callback: impl FnOnce(String) + Send + 'static,
     ) {
-        self.0
-            .lock()
-            .unwrap()
-            .push_back(ScriptTask::EvaluateWithCallback(
-                script.into(),
-                Box::new(callback),
-            ));
+        self.push(ScriptTask::EvaluateWithCallback(
+            script.into(),
+            Box::new(callback),
+        ));
     }
 
     pub fn enqueue_task(&self, task: impl FnOnce() + Send + 'static) {
-        self.0
-            .lock()
-            .unwrap()
-            .push_back(ScriptTask::RunOnDocumentThread(Box::new(task)));
+        self.push(ScriptTask::RunOnDocumentThread(Box::new(task)));
     }
 
     pub fn pending(&self) -> usize {
-        self.0.lock().unwrap().len()
+        self.0.lock().unwrap().tasks.len()
+    }
+
+    /// Attach this queue to the document's native poll cycle.
+    pub fn attach_to(&self, document: &mut ScriptDocument) {
+        let queue = self.clone();
+        document.set_poll_hook(move |document, task_context| queue.poll(document, task_context));
+    }
+
+    fn poll(&self, document: &mut ScriptDocument, task_context: Option<&TaskContext<'_>>) -> bool {
+        if let Some(task_context) = task_context {
+            let mut state = self.0.lock().unwrap();
+            let stale = state
+                .waker
+                .as_ref()
+                .map(|old| !old.will_wake(task_context.waker()))
+                .unwrap_or(true);
+            if stale {
+                state.waker = Some(task_context.waker().clone());
+            }
+        }
+        self.drain_into(document) > 0
     }
 
     pub fn drain_into(&self, document: &mut ScriptDocument) -> usize {
-        let tasks: Vec<ScriptTask> = self.0.lock().unwrap().drain(..).collect();
+        let tasks: Vec<ScriptTask> = self.0.lock().unwrap().tasks.drain(..).collect();
         let count = tasks.len();
         for task in tasks {
             match task {
@@ -87,6 +117,17 @@ impl ScriptQueue {
 mod tests {
     use super::*;
     use blitz_dom::{Document, DocumentConfig};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Wake, Waker};
+
+    #[derive(Default)]
+    struct WakeCounter(AtomicUsize);
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 
     #[test]
     fn responses_run_on_the_document_thread_in_order() {
@@ -139,5 +180,27 @@ mod tests {
             result_receiver.recv().unwrap(),
             r#"{"message":"Hello from greet","requestId":7}"#
         );
+    }
+
+    #[test]
+    fn attached_queue_wakes_and_drains_from_document_poll() {
+        let mut document = ScriptDocument::from_html(
+            r#"<div id="result">waiting</div>"#,
+            DocumentConfig::default(),
+        );
+        let queue = ScriptQueue::default();
+        queue.attach_to(&mut document);
+
+        let counter = Arc::new(WakeCounter::default());
+        let waker = Waker::from(Arc::clone(&counter));
+        assert!(document.poll(Some(Context::from_waker(&waker))));
+
+        queue.enqueue("document.getElementById('result').textContent = 'drained';");
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+        assert!(document.poll(Some(Context::from_waker(&waker))));
+
+        let inner = document.inner();
+        let result = inner.query_selector("#result").unwrap().unwrap();
+        assert_eq!(inner.get_node(result).unwrap().text_content(), "drained");
     }
 }

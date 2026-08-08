@@ -3,15 +3,68 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use blitz_script::ScriptDocument;
 use tauri_runtime::dpi::{PhysicalPosition, PhysicalSize, Position, Rect, Size};
+use tauri_runtime::webview::{DetachedWebview, PendingWebview};
 use tauri_runtime::window::{WebviewEvent, WindowId};
 use tauri_runtime::{Cookie, Error, Runtime, UserEvent, WebviewDispatch, WebviewEventId};
 use tauri_utils::config::Color;
 use url::Url;
 
-use crate::ScriptQueue;
+use crate::{ScriptQueue, attach_ipc_handler};
 
 static NEXT_EVENT_ID: AtomicU32 = AtomicU32::new(1);
+
+/// Tauri's pending webview state paired with the live Blitz document and dispatcher.
+pub struct PreparedBlitzWebview<T: UserEvent, R: Runtime<T>> {
+    pub document: ScriptDocument,
+    pub detached: DetachedWebview<T, R>,
+    pub pending: PendingWebview<T, R>,
+}
+
+/// Prepare a Tauri webview around an already-loaded Blitz document.
+///
+/// Initialization scripts run before the document's own scripts. The IPC handler is installed
+/// before first poll, and queued dispatcher work is drained by that native document poll cycle.
+pub fn prepare_pending_webview<T, R>(
+    mut pending: PendingWebview<T, R>,
+    mut document: ScriptDocument,
+) -> PreparedBlitzWebview<T, R>
+where
+    T: UserEvent,
+    R: Runtime<T, WebviewDispatcher = BlitzWebviewDispatcher<T, R>>,
+{
+    for initialization_script in pending.webview_attributes.initialization_scripts.drain(..) {
+        document.eval(&initialization_script.script);
+    }
+
+    let scripts = ScriptQueue::default();
+    scripts.attach_to(&mut document);
+    let dispatcher = BlitzWebviewDispatcher::new(
+        scripts,
+        pending.url.clone(),
+        pending.webview_attributes.bounds.unwrap_or_default(),
+    );
+    let detached = DetachedWebview {
+        label: pending.label.clone(),
+        dispatcher,
+    };
+
+    if let Some(ipc_handler) = pending.ipc_handler.take() {
+        attach_ipc_handler(
+            &mut document,
+            pending.url.clone(),
+            detached.clone(),
+            ipc_handler,
+        );
+    }
+
+    PreparedBlitzWebview {
+        document,
+        detached,
+        pending,
+    }
+}
 
 /// Thread-safe Tauri webview dispatcher backed by a [`ScriptQueue`].
 ///
