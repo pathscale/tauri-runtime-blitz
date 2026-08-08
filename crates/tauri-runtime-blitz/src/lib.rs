@@ -13,6 +13,8 @@ use tauri_utils::{Theme, TitleBarStyle};
 
 mod ipc;
 pub use ipc::attach_ipc_handler;
+mod script_queue;
+pub use script_queue::ScriptQueue;
 
 /// Renderer-neutral window attributes retained until the native Blitz window is created.
 #[derive(Debug, Clone)]
