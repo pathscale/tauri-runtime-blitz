@@ -163,6 +163,25 @@ revision, and queue conditions; fixed delays are not an acceptable synchronizati
 Failure means stop and repair this channel before Stage 2. Without it, later renderer and
 runtime failures cannot be investigated reliably by an external agent.
 
+### Measured partial result (2026-08-09)
+
+Blitz commit `80881334` implements and verifies the transport boundary and the first probe
+commands:
+
+- loopback-only HTTP, random 256-bit token, atomic 0600 descriptor, bounded request size and
+  response timeout, one serialized renderer queue, and clean shutdown;
+- W3C status/session envelopes, token rejection, session deletion, and reconnect;
+- current URL, page source, CSS element lookup, text, rectangle, pointer-path click, DOM
+  snapshot, idle/layout barrier, and CPU PNG screenshot;
+- process-unique node identities so a reused slab index cannot silently retarget an old element
+  reference;
+- a separate-process Solid test driven entirely by descriptor readiness and protocol replies,
+  with no fixed sleeps.
+
+That test passed with Python unavailable and all existing DOM, Preact, Solid, and doctests also
+passing. This remains a headless Blitz result. The unimplemented commands listed above,
+especially JavaScript/runtime error capture and input actions, keep the Stage 1.5 gate open.
+
 ## Growth after the gate
 
 Keep the Stage 1.5 surface small. Add network inspection, CSS rule provenance, accessibility

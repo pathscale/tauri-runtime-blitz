@@ -44,12 +44,15 @@ commits are:
 - `8402481a` -- pin `pathscale/stylo-less-py@8f39d56b`, removing Python from normal builds.
 - `c8363173` -- document event propagation, template content, system fonts, Solid probe, and
   CPU PNG evidence.
+- `80881334` -- loopback debug-control transport, UI-thread DOM adapter, CPU screenshot, and a
+  passing separate-process Solid control test.
 
 The pushed Stylo fork is <https://github.com/pathscale/stylo-less-py>. It is based on the exact
 Stylo revision Blitz previously pinned, so the change does not include unrelated CSS updates.
 
-Complete **Stage 1.5** from `docs/06-debug-control.md` before CSS or full-app work. The port
-needs a reliable external control channel from the beginning. It is a
+Complete the remaining **Stage 1.5** surface from `docs/06-debug-control.md` before CSS or
+full-app work. The first external-control slice has passed, but the stage is not complete. The
+port needs a reliable external control channel from the beginning. It is a
 debug-only, loopback W3C WebDriver-compatible server with Blitz diagnostics and an explicit
 settled-frame barrier. If an external process cannot discover, authenticate, interact,
 inspect, capture, disconnect, and reconnect to the Solid probe, stop and fix the control

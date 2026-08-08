@@ -122,7 +122,8 @@ architectural, not a gap to fill.
 - The full `blitz-script` suite passed with Python deliberately unavailable: 19 DOM tests, 2
   Preact tests, 1 Solid test, and 1 doctest.
 
-Blitz commits: `8402481a` (Python-free Stylo pin) and `c8363173` (Solid DOM support and probe).
+Blitz commits: `8402481a` (Python-free Stylo pin), `c8363173` (Solid DOM support and probe),
+and `80881334` (debug-control transport and the first separate-process gate).
 This is a headless renderer result, not a `tauri-runtime-blitz` result.
 
 ## Stage 1.5 -- Reliable debug control
@@ -130,6 +131,18 @@ This is a headless renderer result, not a `tauri-runtime-blitz` result.
 Implement and pass the minimum control-plane gate in `06-debug-control.md` before Stage 2.
 Do not substitute shell logs, one-off JavaScript hooks, or screenshots without correlated DOM
 and render revisions. The endpoint must remain usable when application JavaScript throws.
+
+The first slice passed on 2026-08-09. A separate process discovered and authenticated the
+Solid harness, found and measured the increment button, clicked it through pointer hit-testing,
+waited for an idle CPU-painted frame, compared DOM state with a PNG, deleted and recreated its
+session, then shut down cleanly without fixed sleeps. The transport also rejects non-loopback
+binds, publishes a 0600 atomic descriptor, bounds command replies, and does not block when its
+single renderer queue is full. Python was deliberately unavailable for the complete test run.
+
+This is not the complete Stage 1.5 gate. JavaScript execution and error capture, console
+records, event tracing, keyboard/actions, computed style, and the remaining standard WebDriver
+commands still need implementation and external assertions. Do not mark Stage 1.5 passed until
+those rows in `06-debug-control.md` are exercised.
 
 ## Stage 2 -- CSS conformance
 
