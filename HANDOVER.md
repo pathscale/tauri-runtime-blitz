@@ -48,6 +48,8 @@ commits are:
   passing separate-process Solid control test.
 - `17b2350f` -- synchronous/asynchronous remote JavaScript and ordered console/error capture,
   including external retrieval of a deliberate Boa exception and stack.
+- `a79b9ba7` -- pointer-path traces through the document, remote text input through the real
+  IME path, and the empty-input initialization fix exposed by that test.
 
 The pushed Stylo fork is <https://github.com/pathscale/stylo-less-py>. It is based on the exact
 Stylo revision Blitz previously pinned, so the change does not include unrelated CSS updates.

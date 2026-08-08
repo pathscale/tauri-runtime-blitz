@@ -126,6 +126,8 @@ Blitz commits: `8402481a` (Python-free Stylo pin), `c8363173` (Solid DOM support
 and `80881334` (debug-control transport and the first separate-process gate).
 Commit `17b2350f` adds synchronous and asynchronous remote JavaScript plus bounded console and
 uncaught-error capture.
+Commit `a79b9ba7` adds pointer-path event traces, focused text entry through Blitz's IME/input
+path, and fixes empty inputs being initialized with a literal space.
 This is a headless renderer result, not a `tauri-runtime-blitz` result.
 
 ## Stage 1.5 -- Reliable debug control
@@ -143,9 +145,10 @@ single renderer queue is full. Python was deliberately unavailable for the compl
 
 This is not the complete Stage 1.5 gate. JavaScript execution, timer-backed asynchronous
 execution, console records, and deliberate exception retrieval now pass from the external
-process. Event tracing, keyboard/actions, computed style, and the remaining standard WebDriver
-commands still need implementation and external assertions. Do not mark Stage 1.5 passed until
-those rows in `06-debug-control.md` are exercised.
+process. Pointer event tracing now verifies that Solid's delegated click path includes the
+document, and focused text entry passes through the real input path. Computed style, broader
+actions, and the remaining standard WebDriver commands still need implementation and external
+assertions. Do not mark Stage 1.5 passed until those rows in `06-debug-control.md` are exercised.
 
 ## Stage 2 -- CSS conformance
 
