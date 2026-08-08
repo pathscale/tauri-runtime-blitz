@@ -25,8 +25,10 @@ Tauri response scripts and callback evaluations onto Boa's document thread. A he
 a real `#[tauri::command]` `greet` response through that queue and observes it in the Boa DOM.
 `prepare_pending_webview` now applies Tauri initialization scripts, attaches IPC, constructs the
 dispatcher, and installs queue draining and wakeups into the native Blitz document poll cycle. The
-next gate is calling that preparation path from a concrete `Runtime::create_webview` implementation
-and registering its document with the native Blitz window.
+crate now implements the concrete Tauri runtime, handle, event proxy, and window dispatcher. Tauri's
+main `PendingWindow` path prepares its attached webview and registers the Boa document with a native
+Blitz window. A signed AgencyZero preview builds through `tauri::Builder<BlitzRuntime>` with a
+visible real-command IPC probe. Standalone child-webview creation remains unsupported.
 
 ## Docs
 

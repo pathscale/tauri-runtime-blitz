@@ -15,8 +15,14 @@ mod ipc;
 pub use ipc::attach_ipc_handler;
 mod script_queue;
 pub use script_queue::ScriptQueue;
+mod runtime;
+pub use runtime::{
+    BlitzEventLoopProxy, BlitzRuntime, BlitzRuntimeHandle, builder, set_document_factory,
+};
 mod webview;
 pub use webview::{BlitzWebviewDispatcher, PreparedBlitzWebview, prepare_pending_webview};
+mod window_dispatch;
+pub use window_dispatch::BlitzWindowDispatcher;
 
 /// Renderer-neutral window attributes retained until the native Blitz window is created.
 #[derive(Debug, Clone)]

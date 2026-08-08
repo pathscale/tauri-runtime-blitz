@@ -243,13 +243,21 @@ Stage 3 passed on 2026-08-09. Order within Stage 4:
   constructs the detached dispatcher, and attaches its queue to `ScriptDocument::poll`. Enqueuing
   work from another thread wakes the native event loop; the next document poll drains it before
   requesting a redraw.
+- `BlitzRuntime`, `BlitzRuntimeHandle`, `BlitzEventLoopProxy`, and `BlitzWindowDispatcher` now form
+  a concrete Tauri runtime. The main `PendingWindow` path creates its attached webview through
+  `prepare_pending_webview`, maps the preserved AgencyZero window configuration to winit, and adds
+  the document to `BlitzApplication` before the native loop starts.
+- `agencyzero-blitz` 0.3.40 builds and signs through `tauri::Builder<BlitzRuntime>`. Its production
+  frontend stays mock-backed through an empty `list_capabilities` response while a fixed status
+  banner invokes the real Rust `greet` command. The final 39 MB binary has no WebKit, `libc++`, or
+  Python load command.
 - A minimal binary proved that published `tauri-runtime` adds an otherwise-unused WebKit load
   command on macOS. `-Wl,-dead_strip_dylibs` removes it without a Tauri fork; the committed link
   check fails on WebKit, `libc++`, or Python.
 
-Next gate: implement the concrete runtime's `create_webview` path with this preparation helper and
-register the resulting document with the native Blitz window before exposing the rest of
-AgencyZero's command table.
+Next gate: owner-test the signed 0.3.40 preview and confirm its banner reports the real `greet`
+response. Then restore debug control on the concrete runtime and implement standalone child
+webviews before exposing the rest of AgencyZero's command table.
 
 Reference implementation for the trait surface: `versotile-org/tauri-runtime-verso` (archived,
 but it is the only prior art for a non-wry Tauri runtime). Pin an exact Tauri version;
