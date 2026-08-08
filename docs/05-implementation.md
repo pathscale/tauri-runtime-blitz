@@ -1,8 +1,7 @@
 # Implementation guide
 
-Concrete steps for Stages 1-2. Written without having run a build -- every API name below is
-from reading source on the `js-engine` branch, so verify signatures against the actual crate
-before assuming.
+Concrete steps for Stages 1, 1.5, and 2. Stage 1 was run on 2026-08-09; later-stage API names
+are still from reading source and must be verified against the actual crates.
 
 ## Prerequisites
 
@@ -34,14 +33,17 @@ resolve it -- do not "fix" that pin.
 Do not write new code until the shipped examples work.
 
 ```sh
-ls ~/code/blitz-rust/packages/blitz-script/examples/
-ls ~/code/blitz-rust/examples/
-cargo run --example <name> -p blitz-script
+cd ~/code/blitz-rust
+cargo test -p blitz-script --test dom
+cargo test -p blitz-script --test preact
 ```
 
-There is a Preact example under `examples/preact/` with `core_dom_apis.html`,
-`preact_dom_apis.md`, `react_dom_apis.md`, `wpt_dom_apis.md`. Those `.md` files are the
-maintainer's own inventory of what is and is not covered -- read them before writing probes.
+There is no `packages/blitz-script/examples/` directory at the checked-out PR head. The
+executable Preact baseline is `packages/blitz-script/tests/preact.rs`; it loads the standalone
+assets under `examples/preact/`.
+
+Read `examples/preact/preact_dom_apis.md`, `react_dom_apis.md`, and `wpt_dom_apis.md` before
+writing probes. They are the maintainer's own inventory of what is and is not covered.
 
 Also read `packages/blitz-script/tests/` for the intended usage shape.
 
@@ -96,8 +98,38 @@ Render to PNG with `anyrender_vello_cpu` to inspect output without a window.
 
 ### 1.5 Gate
 
-Pass -> Stage 2. Fail on reactivity or delegation -> stop and report; that is architectural,
-not a gap to fill.
+Pass -> Stage 1.5. Fail on reactivity or delegation -> stop and report; that is
+architectural, not a gap to fill.
+
+### 1.6 Measured result (2026-08-09)
+
+**PASS.** The initial source-level risks were real but bounded:
+
+- `blitz-script` built successfully.
+- Existing DOM tests passed (17 initially, 19 after the new regressions) and both Preact tests
+  passed.
+- Document delegation initially failed because `BaseDocument::node_chain` omitted the
+  document node. Appending it made Solid's root `click` listener reachable without changing
+  element bubbling behavior.
+- Solid's compiled template path initially failed because `HTMLTemplateElement.content` was
+  absent. Blitz already stored parsed template children on the template node; exposing that
+  container unblocked clone-based templates.
+- The AgencyZero-shaped Rsbuild/Babel/Solid probe passed initial render, signals,
+  `createEffect`, `<Show>`, `<For>`, and delegated clicks.
+- CPU rendering produced a 640x480 PNG with the final state (`3`, `effect:3`, `over`, and
+  `a/b/c`). System fonts must be enabled; without `blitz-dom/system-fonts`, only the built-in
+  bullet font renders.
+- The full `blitz-script` suite passed with Python deliberately unavailable: 19 DOM tests, 2
+  Preact tests, 1 Solid test, and 1 doctest.
+
+Blitz commits: `8402481a` (Python-free Stylo pin) and `c8363173` (Solid DOM support and probe).
+This is a headless renderer result, not a `tauri-runtime-blitz` result.
+
+## Stage 1.5 -- Reliable debug control
+
+Implement and pass the minimum control-plane gate in `06-debug-control.md` before Stage 2.
+Do not substitute shell logs, one-off JavaScript hooks, or screenshots without correlated DOM
+and render revisions. The endpoint must remain usable when application JavaScript throws.
 
 ## Stage 2 -- CSS conformance
 

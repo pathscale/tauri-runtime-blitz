@@ -32,10 +32,16 @@ tauri (2.11.5)                     upstream, unmodified
               +-- blitz-dom        fork: rendering
               +-- blitz-paint      fork
               +-- anyrender_vello_cpu   CPU raster, no GPU driver (see 04-risks)
+              +-- blitz-debug-control   WE WRITE THIS; debug-only automation server
               +-- blitz-script     fork: Boa DOM bindings  <- the risky dependency
                     |
                     +-- boa_engine (git pin)
 ```
+
+`blitz-debug-control` is a logical boundary, not necessarily a separately published crate.
+It owns the loopback WebDriver-compatible server described in `06-debug-control.md`. It must
+talk to the renderer through a serialized command channel; the server thread must never touch
+Boa, the DOM, layout, or paint state directly.
 
 ## What tauri-runtime-blitz must implement
 
@@ -54,6 +60,10 @@ Against `tauri_runtime`'s traits (`Runtime`, `RuntimeHandle`, `WindowDispatch`,
    (`apps/gui/frontend/src/features/tabs/TabStrip.tsx:109`). Needs hit-test plumbing.
 4. **Native menu passthrough.** The existing `MenuBuilder` menu emits `menu:<id>` events;
    these should carry over unchanged if the event path works.
+5. **Debug control.** A debug-only, loopback control server must remain reachable when app
+   JavaScript fails. It exposes standard WebDriver operations plus Blitz-specific DOM,
+   layout, console, error, and settled-frame diagnostics. This is a development requirement,
+   not an optional post-port tool.
 
 ## Semver exposure
 

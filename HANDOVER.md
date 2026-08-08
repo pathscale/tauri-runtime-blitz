@@ -18,7 +18,7 @@ a JIT.
   0.3.0-beta.1, MSRV 1.91.
 - `~/code/tauri-runtime-blitz` -- planning repo. **Read all of `docs/` before doing
   anything.** `01-architecture.md`, `02-plan.md`, `03-gaps.md`, `04-risks.md`,
-  `05-implementation.md`.
+  `05-implementation.md`, `06-debug-control.md`.
 
 ## Decided, do not relitigate
 
@@ -35,25 +35,25 @@ a JIT.
 - Repos needed: 1 new (`tauri-runtime-blitz`), 1 fork (`blitz-rust`). Plus changes to
   `agencyzero` and `@pathscale/ui`, both owned by us.
 
-## Current task: Stage 1
+## Current task: Stage 1.5
 
-Follow `docs/05-implementation.md` section "Stage 1". In short:
+Stage 1 passed on 2026-08-09. Do not rerun or reinterpret it as Tauri runtime success. The
+measured result and commands are in `docs/05-implementation.md`. The relevant local Blitz
+commits are:
 
-1. `cargo build -p blitz-script` in `~/code/blitz-rust` (long first compile).
-2. Run the **existing** examples under `packages/blitz-script/examples/` and
-   `examples/preact/` first. Read `examples/preact/*.md` -- the maintainer's own DOM API
-   inventory.
-3. Build a ~50-line Solid probe (signal, effect, `<Show>`, `<For>`, click handler) with
-   rsbuild + the Solid babel plugin, so it compiles to the same template form AgencyZero uses.
-4. Run it under `blitz-script`, render to PNG via `anyrender_vello_cpu`.
+- `8402481a` -- pin `pathscale/stylo-less-py@8f39d56b`, removing Python from normal builds.
+- `c8363173` -- document event propagation, template content, system fonts, Solid probe, and
+  CPU PNG evidence.
 
-**Gate:** does Solid's fine-grained reactivity drive `blitz-dom`, and do delegated events
-bubble? Solid attaches listeners at the document root, so **event delegation is the highest
-risk item** -- test it explicitly and separately from direct listeners.
+The pushed Stylo fork is <https://github.com/pathscale/stylo-less-py>. It is based on the exact
+Stylo revision Blitz previously pinned, so the change does not include unrelated CSS updates.
 
-Pass -> Stage 2 (CSS conformance, section in the same doc).
-Fail on reactivity or delegation -> **stop and report.** That is architectural; it would mean
-rewriting `blitz-script` rather than extending it.
+Complete **Stage 1.5** from `docs/06-debug-control.md` before CSS or full-app work. The port
+needs a reliable external control channel from the beginning. It is a
+debug-only, loopback W3C WebDriver-compatible server with Blitz diagnostics and an explicit
+settled-frame barrier. If an external process cannot discover, authenticate, interact,
+inspect, capture, disconnect, and reconnect to the Solid probe, stop and fix the control
+plane rather than continuing with ad hoc logs.
 
 ## Constraints
 

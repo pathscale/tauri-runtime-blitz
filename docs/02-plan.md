@@ -1,7 +1,8 @@
 # Plan
 
 Cheapest-information-first. Each stage has a gate; do not start the next until the previous
-passes. Stages 1 and 2 together are ~1 week and decide whether the rest is worth doing.
+passes. Stages 1 and 2 contain ~1 week of renderer viability work. Stage 1.5 is additional
+control-plane work and is not included in that estimate.
 
 ## Stage 1 -- Does Solid run on Boa at all? (GATE, do first)
 
@@ -22,6 +23,22 @@ already implements the needed surface -- `template`/`cloneNode`, `createElement`
 `createTextNode`, `createComment`, `insertBefore`, `appendChild`, `removeChild`,
 `replaceChild`, `setAttribute`, `className`, `textContent`, `style.setProperty`,
 `addEventListener` with `bubbles`/`target`/`currentTarget`/`stopPropagation`.
+
+## Stage 1.5 -- Can we control and diagnose it reliably? (GATE)
+
+Add the debug-only control plane before the renderer becomes more complicated. It is a small
+W3C WebDriver-compatible HTTP server owned by the Blitz runtime, plus `blitz:*` diagnostic
+commands for DOM/layout snapshots, console and runtime errors, event tracing, renderer
+metrics, and a deterministic settled-frame barrier.
+
+**Pass:** an external process can discover and authenticate to the server, create a session,
+find and interact with the Solid probe, wait for a committed frame, correlate DOM state and a
+screenshot by render revision, retrieve a deliberate JavaScript exception, disconnect, and
+reconnect.
+
+**Fail -> stop and fix the control plane.** Do not continue into CSS and full-app work with
+only screenshots and ad hoc log statements. See `06-debug-control.md` for the contract and
+acceptance test.
 
 ## Stage 2 -- Does our CSS render? (GATE)
 
