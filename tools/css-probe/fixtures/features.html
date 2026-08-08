@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      @property --accent {
+        syntax: "<color>";
+        inherits: true;
+        initial-value: #ffee58;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 32px;
+        background: oklch(10.5% 0.004 240);
+        color: oklch(84% 0.008 245);
+        font-family: system-ui, sans-serif;
+      }
+      .row { display: flex; gap: 16px; }
+      .card {
+        width: 220px;
+        height: 140px;
+        padding: 18px;
+        border-radius: 14px;
+        border: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
+        background: oklch(20% 0.008 240);
+      }
+      .relative {
+        color: rgb(from #ffee58 calc(r * 0.8) calc(g * 0.8) calc(b * 0.8));
+      }
+      .mask {
+        width: 48px;
+        height: 48px;
+        margin-top: 16px;
+        background: var(--accent);
+        mask-image: linear-gradient(135deg, #000 50%, transparent 50%);
+      }
+      @supports (color: color-mix(in lab, red, red)) {
+        .supports { background: color-mix(in lab, #ffee58 18%, #18191d); }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <section class="card supports">
+        <strong>color-mix + oklch</strong>
+        <div class="mask"></div>
+      </section>
+      <section class="card relative">
+        relative rgb(from …)
+      </section>
+    </div>
+  </body>
+</html>

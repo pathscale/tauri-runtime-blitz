@@ -1,0 +1,15 @@
+[package]
+name = "tauri-blitz-css-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyrender = "0.12"
+anyrender_vello_cpu = { version = "0.15", features = ["multithreading"] }
+blitz-dom = { path = "../../../blitz-rust/packages/blitz-dom", features = ["system-fonts"] }
+blitz-html = { path = "../../../blitz-rust/packages/blitz-html" }
+blitz-paint = { path = "../../../blitz-rust/packages/blitz-paint" }
+blitz-traits = { path = "../../../blitz-rust/packages/blitz-traits" }
+image = { version = "0.25.6", default-features = false, features = ["png"] }
+url = "2"

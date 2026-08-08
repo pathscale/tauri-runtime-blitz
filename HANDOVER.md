@@ -18,7 +18,7 @@ a JIT.
   0.3.0-beta.1, MSRV 1.91.
 - `~/code/tauri-runtime-blitz` -- planning repo. **Read all of `docs/` before doing
   anything.** `01-architecture.md`, `02-plan.md`, `03-gaps.md`, `04-risks.md`,
-  `05-implementation.md`, `06-debug-control.md`.
+  `05-implementation.md`, `06-debug-control.md`, `07-css-conformance.md`.
 
 ## Decided, do not relitigate
 
