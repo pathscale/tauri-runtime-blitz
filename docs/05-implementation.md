@@ -193,16 +193,32 @@ ours to change.
 
 ## Stage 3 notes
 
-Run the real 542 KB bundle against `apps/gui/frontend/src/api/mock.ts` (1,037 lines of
-fixtures). No Tauri, no IPC -- the UI already runs headless against these.
+Run the real production bundle against `apps/gui/frontend/src/api/mock.ts`. No Tauri, no IPC --
+the UI already runs headless against these.
 
 Profile `features/project/MessageBody.tsx` specifically. It parses markdown with regex on
 every message render, and regex is Boa's single weakest operation (47 vs 3941 against jitless
 V8 on the V8 benchmark suite).
 
+### Stage 3 measured result (2026-08-09)
+
+**PASS.** The 581.7 KB JavaScript bundle built from AgencyZero commit `53d77c6` boots under
+Blitz + Boa, selects the mock backend, hydrates all three fixture projects, reaches
+`[az] boot: ready`, and reports no uncaught runtime errors. A debug-control pointer action on
+the Settings button then advances document and paint revisions, renders the full Settings
+screen, and still reports no runtime errors.
+
+Blitz commit `ebb3caf0` adds the three browser APIs exposed by the real-bundle gate:
+`Element.dataset`, `Element.classList`, and a cycle-aware `structuredClone` implementation for
+ordinary structured data. It also lets the separate-process harness load an arbitrary document
+through `BLITZ_DEBUG_DOCUMENT`. The complete `blitz-script` test suite passes with both
+`PYTHON` and `PYTHON3` pointing to nonexistent executables. Clippy reaches an unrelated,
+pre-existing `needless_return` warning in `blitz-dom/src/mutator.rs`; the Stage 3 changes add no
+test failure.
+
 ## Stage 4 notes
 
-Do not start until Stage 3 renders the real app. Order within Stage 4:
+Stage 3 passed on 2026-08-09. Order within Stage 4:
 
 1. IPC bridge (unblocks everything else)
 2. Windowing (winit vs tao)

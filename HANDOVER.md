@@ -13,6 +13,9 @@ a JIT.
 
 - `~/code/agencyzero` -- the app. Rust backend (27k LOC) + SolidJS frontend (21k LOC) at
   `apps/gui/frontend`. Tauri 2.11.5, tauri-runtime 2.11.3, tauri-runtime-wry 2.11.4.
+- `~/code/agencyzero-blitz` -- isolated local fork for the runnable Blitz-backed application,
+  branch `blitz-runtime-spike`, created from AgencyZero commit `53d77c6`. The owner's working
+  checkout had uncommitted changes, so none were copied into this fork.
 - `~/code/blitz-rust` -- fork of DioxusLabs/blitz, **on branch `js-engine`** (head of PR #491,
   which adds `packages/blitz-script`: Boa-based JS execution). Workspace version
   0.3.0-beta.1, MSRV 1.91.
@@ -35,7 +38,7 @@ a JIT.
 - Repos needed: 1 new (`tauri-runtime-blitz`), 1 fork (`blitz-rust`). Plus changes to
   `agencyzero` and `@pathscale/ui`, both owned by us.
 
-## Current task: Stage 3
+## Current task: Stage 4
 
 Stage 1 passed on 2026-08-09. Do not rerun or reinterpret it as Tauri runtime success. The
 measured result and commands are in `docs/05-implementation.md`. The relevant local Blitz
@@ -56,9 +59,11 @@ commits are:
 The pushed Stylo fork is <https://github.com/pathscale/stylo-less-py>. It is based on the exact
 Stylo revision Blitz previously pinned, so the change does not include unrelated CSS updates.
 
-Stages 1.5 and 2 passed on 2026-08-09; measured results are in `docs/06-debug-control.md` and
-`docs/07-css-conformance.md`. Begin the full-bundle headless Stage 3 gate from
-`docs/05-implementation.md`. Do not begin the Tauri runtime crate before Stage 3 passes.
+Stages 1.5, 2, and 3 passed on 2026-08-09; measured results are in
+`docs/05-implementation.md`, `docs/06-debug-control.md`, and `docs/07-css-conformance.md`.
+Blitz commit `ebb3caf0` runs the real AgencyZero production bundle under Boa, reaches the mock
+backend's ready state, and opens Settings through the real pointer path with no runtime errors.
+Begin the Tauri runtime integration in the isolated `~/code/agencyzero-blitz` fork.
 
 ## Constraints
 
@@ -85,5 +90,8 @@ CSS at risk, all in code we own: 335 `color-mix()`, 43 `oklch()`, 14 `rgb(from .
   forever. Do not present it as a supported upstream feature.
 - Report what actually happens, including failures, with the real output. Do not smooth over a
   partial result.
+- Use port `3011` for any dedicated preview or browser fixture server. Port `3010` may be in use by
+  the owner's other work. Continue to use an OS-selected port (`127.0.0.1:0`) for the Blitz debug
+  control channel itself.
 - If a stage fails its gate, say so plainly and stop rather than working around it. The point
   of the gates is to kill this cheaply if it does not work.
