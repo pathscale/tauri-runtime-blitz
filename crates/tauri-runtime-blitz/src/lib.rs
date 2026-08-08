@@ -11,6 +11,9 @@ use tauri_utils::config::{
 };
 use tauri_utils::{Theme, TitleBarStyle};
 
+mod ipc;
+pub use ipc::attach_ipc_handler;
+
 /// Renderer-neutral window attributes retained until the native Blitz window is created.
 #[derive(Debug, Clone)]
 pub struct BlitzWindowBuilder {
