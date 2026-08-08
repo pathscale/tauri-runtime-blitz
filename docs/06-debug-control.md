@@ -165,8 +165,8 @@ runtime failures cannot be investigated reliably by an external agent.
 
 ### Measured partial result (2026-08-09)
 
-Blitz commit `80881334` implements and verifies the transport boundary and the first probe
-commands:
+Blitz commits `80881334` and `17b2350f` implement and verify the transport boundary, first
+probe commands, and runtime diagnostics:
 
 - loopback-only HTTP, random 256-bit token, atomic 0600 descriptor, bounded request size and
   response timeout, one serialized renderer queue, and clean shutdown;
@@ -176,11 +176,13 @@ commands:
 - process-unique node identities so a reused slab index cannot silently retarget an old element
   reference;
 - a separate-process Solid test driven entirely by descriptor readiness and protocol replies,
-  with no fixed sleeps.
+  with no fixed sleeps;
+- synchronous and timer-backed asynchronous JavaScript execution, bounded ordered console
+  records, and bounded ordered uncaught-error records with a retained Boa stack.
 
 That test passed with Python unavailable and all existing DOM, Preact, Solid, and doctests also
-passing. This remains a headless Blitz result. The unimplemented commands listed above,
-especially JavaScript/runtime error capture and input actions, keep the Stage 1.5 gate open.
+passing. This remains a headless Blitz result. Input actions, event tracing, computed style,
+and the other unimplemented commands listed above keep the Stage 1.5 gate open.
 
 ## Growth after the gate
 

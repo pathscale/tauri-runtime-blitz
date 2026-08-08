@@ -124,6 +124,8 @@ architectural, not a gap to fill.
 
 Blitz commits: `8402481a` (Python-free Stylo pin), `c8363173` (Solid DOM support and probe),
 and `80881334` (debug-control transport and the first separate-process gate).
+Commit `17b2350f` adds synchronous and asynchronous remote JavaScript plus bounded console and
+uncaught-error capture.
 This is a headless renderer result, not a `tauri-runtime-blitz` result.
 
 ## Stage 1.5 -- Reliable debug control
@@ -139,8 +141,9 @@ session, then shut down cleanly without fixed sleeps. The transport also rejects
 binds, publishes a 0600 atomic descriptor, bounds command replies, and does not block when its
 single renderer queue is full. Python was deliberately unavailable for the complete test run.
 
-This is not the complete Stage 1.5 gate. JavaScript execution and error capture, console
-records, event tracing, keyboard/actions, computed style, and the remaining standard WebDriver
+This is not the complete Stage 1.5 gate. JavaScript execution, timer-backed asynchronous
+execution, console records, and deliberate exception retrieval now pass from the external
+process. Event tracing, keyboard/actions, computed style, and the remaining standard WebDriver
 commands still need implementation and external assertions. Do not mark Stage 1.5 passed until
 those rows in `06-debug-control.md` are exercised.
 

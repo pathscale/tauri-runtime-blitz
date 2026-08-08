@@ -46,6 +46,8 @@ commits are:
   CPU PNG evidence.
 - `80881334` -- loopback debug-control transport, UI-thread DOM adapter, CPU screenshot, and a
   passing separate-process Solid control test.
+- `17b2350f` -- synchronous/asynchronous remote JavaScript and ordered console/error capture,
+  including external retrieval of a deliberate Boa exception and stack.
 
 The pushed Stylo fork is <https://github.com/pathscale/stylo-less-py>. It is based on the exact
 Stylo revision Blitz previously pinned, so the change does not include unrelated CSS updates.
