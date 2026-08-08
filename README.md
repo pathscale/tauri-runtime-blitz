@@ -20,8 +20,11 @@ Stages 1 through 3 passed on 2026-08-09. The real AgencyZero production bundle b
 interactive under Boa, and a signed 32 MB native CPU-rendered preview launches from the isolated
 `agencyzero-blitz` fork. Stage 4 is active: the runtime crate preserves AgencyZero's window
 configuration, strips the published trait crate's unused WebKit linkage, and forwards Boa's
-`window.ipc.postMessage` into Tauri's existing IPC handler. The first real command round trip is
-the next gate.
+`window.ipc.postMessage` into Tauri's existing IPC handler. Its webview dispatcher now queues
+Tauri response scripts and callback evaluations onto Boa's document thread. A headless test passes
+a real `#[tauri::command]` `greet` response through that queue and observes it in the Boa DOM. The
+next gate is constructing this dispatcher from Tauri's pending webview and draining it from the
+native event loop.
 
 ## Docs
 

@@ -234,12 +234,18 @@ Stage 3 passed on 2026-08-09. Order within Stage 4:
   private descriptor contract as the headless harness. Normal Finder launches expose no port.
 - The initial `tauri-runtime-blitz` crate preserves the real AgencyZero window configuration and
   connects Boa's `window.ipc.postMessage` host hook to Tauri's `WebviewIpcHandler`.
+- `BlitzWebviewDispatcher` implements Tauri's `eval_script` and
+  `eval_script_with_callback` surfaces through a thread-safe queue drained by the owning Boa
+  document. A headless integration test dispatches a real `#[tauri::command]` `greet` through
+  Tauri, serializes its response, evaluates the callback in Boa, and observes `Hello, Boa!` in the
+  DOM.
 - A minimal binary proved that published `tauri-runtime` adds an otherwise-unused WebKit load
   command on macOS. `-Wl,-dead_strip_dylibs` removes it without a Tauri fork; the committed link
   check fails on WebKit, `libc++`, or Python.
 
-Next gate: queue Tauri's asynchronous `eval_script` response onto the document thread and pass a
-real `greet` command round trip before exposing the rest of AgencyZero's command table.
+Next gate: construct the dispatcher from Tauri's pending webview, attach the IPC handler there,
+and drain its queue from the native event loop before exposing the rest of AgencyZero's command
+table.
 
 Reference implementation for the trait surface: `versotile-org/tauri-runtime-verso` (archived,
 but it is the only prior art for a non-wry Tauri runtime). Pin an exact Tauri version;
