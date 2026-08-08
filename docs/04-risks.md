@@ -48,6 +48,20 @@ dlopens the Vulkan/Metal/D3D driver -- a large C++ attack surface sitting exactl
 untrusted content is rendered. CPU raster is the choice consistent with the policy; it costs
 performance.
 
+## Published tauri-runtime names WebKit on macOS
+
+`tauri-runtime 2.11.3` unconditionally depends on `objc2-web-kit` because three public macOS
+fields expose `WKWebView`/`WKWebViewConfiguration` types. A minimal release binary that merely
+mentions `tauri_runtime::Error` therefore carries a WebKit framework load command even though
+it contains no webview implementation.
+
+This does **not** require a Tauri fork. The reference is unused by a Blitz runtime, and linking
+with `-Wl,-dead_strip_dylibs` removes WebKit, AppKit, Foundation, CoreFoundation, and Objective-C
+from the minimal proof binary, leaving only `libSystem`. The repository's Cargo config applies
+that flag on macOS. `tools/tauri-runtime-link-check/verify.sh` rebuilds the proof and fails if
+WebKit, `libc++`, or Python appears in the final Mach-O dependencies. Apply the same linker flag
+in the consuming AgencyZero Blitz build and retain an `otool -L` release gate.
+
 ## Pure Rust is not the same as no unsafe
 
 `boa_gc` is a tracing GC built on `unsafe trait Trace` with manual trace/finalize. Writing DOM

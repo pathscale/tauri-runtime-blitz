@@ -1,2 +1,7 @@
 [build]
 target-dir = "../blitz-rust/target"
+
+[target.'cfg(target_os = "macos")']
+# `tauri-runtime` exposes WKWebView types in its public macOS trait surface even when a custom
+# runtime never uses WebKit. Remove those otherwise-unused framework load commands at final link.
+rustflags = ["-C", "link-arg=-Wl,-dead_strip_dylibs"]
