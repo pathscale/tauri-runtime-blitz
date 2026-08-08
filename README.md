@@ -16,10 +16,12 @@ Tauri keeps windowing, native menu, updater, dialog plugin, packaging, signing, 
 
 ## Status
 
-Stage 1 passed on 2026-08-09: AgencyZero-shaped Solid output runs reactively on Boa,
-document-delegated events fire, and the result renders through the CPU backend. Stage 1.5
-(reliable external debug control) is next. No Tauri runtime exists yet; see `docs/02-plan.md`
-for the remaining gates.
+Stages 1 through 3 passed on 2026-08-09. The real AgencyZero production bundle boots and is
+interactive under Boa, and a signed 32 MB native CPU-rendered preview launches from the isolated
+`agencyzero-blitz` fork. Stage 4 is active: the runtime crate preserves AgencyZero's window
+configuration, strips the published trait crate's unused WebKit linkage, and forwards Boa's
+`window.ipc.postMessage` into Tauri's existing IPC handler. The first real command round trip is
+the next gate.
 
 ## Docs
 
@@ -31,3 +33,4 @@ for the remaining gates.
 | `docs/04-risks.md` | What makes this fail, and the honest cost |
 | `docs/05-implementation.md` | Concrete commands and assertions for the first gates |
 | `docs/06-debug-control.md` | Reliable WebDriver-compatible control and diagnostics channel |
+| `docs/07-css-conformance.md` | Chromium/Blitz screenshot diffs and bounded visual gaps |

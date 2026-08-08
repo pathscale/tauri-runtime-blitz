@@ -225,6 +225,22 @@ Stage 3 passed on 2026-08-09. Order within Stage 4:
 3. Overlay title bar hit-testing
 4. Menu passthrough
 
+### Stage 4 checkpoint (2026-08-09)
+
+- A signed, arm64, 32 MB CPU-rendered preview app launches the production bundle from
+  `~/code/agencyzero-blitz`. It is intentionally mock-backed and visually exposes the Stage 2
+  renderer gaps; launch passed, appearance did not.
+- The preview can opt into the authenticated debug controller through the same environment and
+  private descriptor contract as the headless harness. Normal Finder launches expose no port.
+- The initial `tauri-runtime-blitz` crate preserves the real AgencyZero window configuration and
+  connects Boa's `window.ipc.postMessage` host hook to Tauri's `WebviewIpcHandler`.
+- A minimal binary proved that published `tauri-runtime` adds an otherwise-unused WebKit load
+  command on macOS. `-Wl,-dead_strip_dylibs` removes it without a Tauri fork; the committed link
+  check fails on WebKit, `libc++`, or Python.
+
+Next gate: queue Tauri's asynchronous `eval_script` response onto the document thread and pass a
+real `greet` command round trip before exposing the rest of AgencyZero's command table.
+
 Reference implementation for the trait surface: `versotile-org/tauri-runtime-verso` (archived,
 but it is the only prior art for a non-wry Tauri runtime). Pin an exact Tauri version;
 `tauri-runtime`'s traits move between minor releases.
