@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -14,6 +15,16 @@ use url::Url;
 use crate::{ScriptQueue, attach_ipc_handler};
 
 static NEXT_EVENT_ID: AtomicU32 = AtomicU32::new(1);
+const CUSTOM_PROTOCOL_AVAILABLE: &str = "let customProtocolIpcFailed = false";
+const CUSTOM_PROTOCOL_BLOCKED: &str = "let customProtocolIpcFailed = true";
+
+fn initialization_script_for_blitz(script: &str) -> Cow<'_, str> {
+    if script.contains(CUSTOM_PROTOCOL_AVAILABLE) {
+        Cow::Owned(script.replacen(CUSTOM_PROTOCOL_AVAILABLE, CUSTOM_PROTOCOL_BLOCKED, 1))
+    } else {
+        Cow::Borrowed(script)
+    }
+}
 
 /// Tauri's pending webview state paired with the live Blitz document and dispatcher.
 pub struct PreparedBlitzWebview<T: UserEvent, R: Runtime<T>> {
@@ -35,7 +46,8 @@ where
     R: Runtime<T, WebviewDispatcher = BlitzWebviewDispatcher<T, R>>,
 {
     for initialization_script in pending.webview_attributes.initialization_scripts.drain(..) {
-        document.eval(&initialization_script.script);
+        let script = initialization_script_for_blitz(&initialization_script.script);
+        document.eval(&script);
     }
 
     let scripts = ScriptQueue::default();
@@ -63,6 +75,32 @@ where
         document,
         detached,
         pending,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tauri_initialization_uses_supported_post_message_ipc() {
+        let source = "before; let customProtocolIpcFailed = false; after";
+        let rewritten = initialization_script_for_blitz(source);
+
+        assert_eq!(
+            rewritten,
+            "before; let customProtocolIpcFailed = true; after"
+        );
+    }
+
+    #[test]
+    fn unrelated_initialization_scripts_are_unchanged() {
+        let source = "window.pluginInitialized = true";
+
+        assert!(matches!(
+            initialization_script_for_blitz(source),
+            Cow::Borrowed(value) if value == source
+        ));
     }
 }
 
