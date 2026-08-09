@@ -71,7 +71,10 @@ control does not retain debug logs, DOM snapshots, or renderer telemetry.
    click, set-value, scroll-into-view, physical key, pointer, wheel, and modifier
    input through `ScriptDocument`'s native event path. Relaunch uses LaunchServices
    for a macOS app bundle (and the current executable elsewhere), then exits the
-   old instance cleanly. Diagnostic idle/snapshot handlers remain to be connected.
+   old instance cleanly. An embedder that registers an agent-control handler owns
+   the relaunch lifecycle instead; this lets AgencyZero drain state and delegate
+   replacement to its restart Angel. Diagnostic idle/snapshot handlers remain to
+   be connected.
 4. Renderer instrumentation and pushed metrics/errors.
 5. WebDriver compatibility adapter backed by the endpoint protocol; delete the
    old bespoke server after its acceptance suite passes unchanged.

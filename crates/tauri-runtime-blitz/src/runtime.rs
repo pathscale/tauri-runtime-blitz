@@ -732,8 +732,13 @@ impl<T: UserEvent> RuntimeApplication<T> {
                             DebugResponse::Ack
                         }
                         ControlBridgeRequest::Agent(AgentControlRequest::Relaunch) => {
+                            let delegated = AGENT_CONTROL_HANDLER
+                                .get_or_init(|| RwLock::new(None))
+                                .read()
+                                .unwrap()
+                                .is_some();
                             let result = self.handle_builtin_agent(AgentControlRequest::Relaunch);
-                            if matches!(result, DebugResponse::Ack) {
+                            if !delegated && matches!(result, DebugResponse::Ack) {
                                 self.emit(RunEvent::ExitRequested {
                                     code: Some(0),
                                     tx: channel().0,
