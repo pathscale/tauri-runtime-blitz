@@ -30,6 +30,9 @@ use winit::event_loop::ActiveEventLoop;
 use winit::monitor::Fullscreen;
 use winit::window::{WindowAttributes, WindowButtons, WindowLevel};
 
+#[cfg(target_os = "macos")]
+use winit::platform::macos::WindowAttributesMacOS;
+
 use crate::window_dispatch::{BlitzWindowDispatcher, NativeWindowState};
 use crate::{
     BlitzWebviewDispatcher, BlitzWindowBuilder, PreparedBlitzWebview, prepare_pending_webview,
@@ -719,7 +722,27 @@ fn window_attributes(builder: &BlitzWindowBuilder) -> WindowAttributes {
     if config.maximizable {
         buttons |= WindowButtons::MAXIMIZE;
     }
-    attributes.with_enabled_buttons(buttons)
+    attributes = attributes.with_enabled_buttons(buttons);
+
+    #[cfg(target_os = "macos")]
+    {
+        let macos_attributes = match config.title_bar_style {
+            tauri_utils::TitleBarStyle::Visible => {
+                WindowAttributesMacOS::default().with_title_hidden(config.hidden_title)
+            }
+            tauri_utils::TitleBarStyle::Transparent => WindowAttributesMacOS::default()
+                .with_titlebar_transparent(true)
+                .with_title_hidden(config.hidden_title),
+            tauri_utils::TitleBarStyle::Overlay => WindowAttributesMacOS::default()
+                .with_titlebar_transparent(true)
+                .with_title_hidden(config.hidden_title)
+                .with_fullsize_content_view(true),
+            _ => WindowAttributesMacOS::default().with_title_hidden(config.hidden_title),
+        };
+        attributes = attributes.with_platform_attributes(Box::new(macos_attributes));
+    }
+
+    attributes
 }
 
 #[cfg(test)]
