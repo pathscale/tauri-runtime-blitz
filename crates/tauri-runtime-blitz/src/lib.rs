@@ -13,9 +13,18 @@ use tauri_utils::{Theme, TitleBarStyle};
 
 mod ipc;
 pub use ipc::attach_ipc_handler;
+#[cfg(all(feature = "agent-control", unix))]
+mod agent_control_server;
+#[cfg(feature = "agent-control")]
+#[path = "debug_protocol.rs"]
+pub mod control_protocol;
 mod script_queue;
 pub use script_queue::ScriptQueue;
 mod runtime;
+#[cfg(all(feature = "agent-control", unix))]
+pub use runtime::set_agent_control_handler;
+#[cfg(all(feature = "diagnostics", unix))]
+pub use runtime::set_diagnostics_handler;
 pub use runtime::{
     BlitzEventLoopProxy, BlitzRuntime, BlitzRuntimeHandle, builder, set_document_factory,
     set_runtime_trace,

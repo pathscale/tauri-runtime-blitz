@@ -11,19 +11,25 @@ anyrender_vello = { git = "https://github.com/pathscale/ps-anyrender.git", rev =
 blitz-script = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729", features = ["system-fonts"] }
 blitz-shell = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729", default-features = false, features = ["clipboard", "svg"] }
 http = "1"
+endpoint-libs = { git = "https://github.com/pathscale/endpoint-libs.git", rev = "7eff4d850f1c84c1104c0729c68f50711940b7fb", default-features = false, features = ["agent-control"], optional = true }
 raw-window-handle = "0.6"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 tauri = { version = "=2.11.5", default-features = false }
 tauri-runtime = "=2.11.3"
 tauri-utils = "=2.9.3"
 url = "2"
 winit = "=0.31.0-beta.2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync"], optional = true }
 
 [features]
+default = ["agent-control"]
+agent-control = ["dep:endpoint-libs", "dep:serde", "dep:serde_json", "dep:tokio"]
 debug-control = ["blitz-script/debug-control", "blitz-shell/debug-control"]
+diagnostics = ["agent-control", "debug-control"]
 devtools = ["tauri-runtime/devtools"]
 macos-private-api = []
 
 [dev-dependencies]
 blitz-dom = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729" }
-serde_json = "1"
 tauri = { version = "=2.11.5", default-features = false, features = ["test"] }
