@@ -7,7 +7,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread::{ThreadId, current};
 
-use anyrender_vello_cpu::VelloCpuWindowRenderer;
+use anyrender_vello::VelloWindowRenderer;
 use blitz_script::ScriptDocument;
 use blitz_shell::{
     BlitzApplication, BlitzShellEvent, BlitzShellProxy, WindowConfig as BlitzShellWindowConfig,
@@ -201,9 +201,8 @@ impl<T: UserEvent> BlitzRuntimeContext<T> {
             // The pointer is installed only while Tauri's main-thread callback is running. The
             // callback does not otherwise borrow the Blitz application, and this runtime clears
             // the pointer before returning to the event loop.
-            let application = unsafe {
-                &*(application as *const RefCell<BlitzApplication<VelloCpuWindowRenderer>>)
-            };
+            let application =
+                unsafe { &*(application as *const RefCell<BlitzApplication<VelloWindowRenderer>>) };
             let mut application = application
                 .try_borrow_mut()
                 .map_err(|_| Error::FailedToSendMessage)?;
@@ -341,7 +340,7 @@ impl<T: UserEvent> RuntimeHandle<T> for BlitzRuntimeHandle<T> {
 }
 
 struct RuntimeApplication<T: UserEvent> {
-    blitz: RefCell<BlitzApplication<VelloCpuWindowRenderer>>,
+    blitz: RefCell<BlitzApplication<VelloWindowRenderer>>,
     receiver: Receiver<RuntimeMessage<T>>,
     callback: Option<Box<dyn FnMut(RunEvent<T>)>>,
     ready: bool,
@@ -594,7 +593,7 @@ pub fn builder() -> tauri::Builder<BlitzRuntime> {
 
 fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
     context: &BlitzRuntimeContext<T>,
-    application: &mut BlitzApplication<VelloCpuWindowRenderer>,
+    application: &mut BlitzApplication<VelloWindowRenderer>,
     pending: PendingWindow<T, BlitzRuntime<T>>,
     after_window_creation: Option<F>,
 ) -> tauri_runtime::Result<DetachedWindow<T, BlitzRuntime<T>>> {
@@ -622,7 +621,7 @@ fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
     let state_for_creation = Arc::clone(&state);
     let window = BlitzShellWindowConfig::with_attributes(
         Box::new(prepared.document),
-        VelloCpuWindowRenderer::new(),
+        VelloWindowRenderer::new(),
         attributes,
     )
     .with_on_created(move |native| {

@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-anyrender_vello_cpu = { version = "0.15.0", features = ["multithreading", "softbuffer_window_renderer"] }
+anyrender_vello = "0.13.0"
 blitz-script = { path = "../../../blitz-rust/packages/blitz-script", features = ["system-fonts"] }
 blitz-shell = { path = "../../../blitz-rust/packages/blitz-shell", default-features = false }
 http = "1"
