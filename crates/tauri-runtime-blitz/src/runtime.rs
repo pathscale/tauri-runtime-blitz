@@ -31,7 +31,7 @@ use winit::monitor::Fullscreen;
 use winit::window::{WindowAttributes, WindowButtons, WindowLevel};
 
 #[cfg(target_os = "macos")]
-use winit::platform::macos::WindowAttributesMacOS;
+use winit::platform::macos::{ApplicationHandlerExtMacOS, WindowAttributesMacOS};
 
 use crate::window_dispatch::{BlitzWindowDispatcher, NativeWindowState};
 use crate::{
@@ -386,6 +386,11 @@ impl<T: UserEvent> RuntimeApplication<T> {
 }
 
 impl<T: UserEvent> ApplicationHandler for RuntimeApplication<T> {
+    #[cfg(target_os = "macos")]
+    fn macos_handler(&mut self) -> Option<&mut dyn ApplicationHandlerExtMacOS> {
+        Some(self)
+    }
+
     fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         runtime_trace("runtime can_create_surfaces entered");
         if !self.ready {
@@ -437,6 +442,20 @@ impl<T: UserEvent> ApplicationHandler for RuntimeApplication<T> {
         self.drain_runtime_messages(event_loop);
         self.emit(RunEvent::MainEventsCleared);
         self.blitz.get_mut().about_to_wait(event_loop);
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl<T: UserEvent> ApplicationHandlerExtMacOS for RuntimeApplication<T> {
+    fn standard_key_binding(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window_id: winit::window::WindowId,
+        action: &str,
+    ) {
+        self.blitz
+            .get_mut()
+            .standard_key_binding(event_loop, window_id, action);
     }
 }
 
