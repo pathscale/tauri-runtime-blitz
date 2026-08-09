@@ -586,7 +586,10 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
 
 /// Create a Tauri builder configured for the Blitz runtime.
 pub fn builder() -> tauri::Builder<BlitzRuntime> {
-    tauri::Builder::new()
+    let builder = tauri::Builder::new();
+    #[cfg(target_os = "macos")]
+    let builder = builder.enable_macos_default_menu(false);
+    builder
 }
 
 fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
