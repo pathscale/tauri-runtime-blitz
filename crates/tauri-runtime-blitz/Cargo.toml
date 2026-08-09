@@ -9,7 +9,7 @@ publish.workspace = true
 [dependencies]
 anyrender_vello = { path = "../../../anyrender/crates/anyrender_vello" }
 blitz-script = { path = "../../../blitz-rust/packages/blitz-script", features = ["system-fonts"] }
-blitz-shell = { path = "../../../blitz-rust/packages/blitz-shell", default-features = false }
+blitz-shell = { path = "../../../blitz-rust/packages/blitz-shell", default-features = false, features = ["svg"] }
 http = "1"
 raw-window-handle = "0.6"
 tauri = { version = "=2.11.5", default-features = false }
