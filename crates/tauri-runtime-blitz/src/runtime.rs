@@ -531,13 +531,17 @@ impl<T: UserEvent> RuntimeApplication<T> {
                             visible,
                             selected: element_attr(element, "aria-selected") == Some("true")
                                 || element_attr(element, "selected").is_some(),
-                            bounds: rect.map(|rect| {
-                                [
+                            bounds: rect.and_then(|rect| {
+                                let bounds = [
                                     rect.x as f64,
                                     rect.y as f64,
                                     rect.width as f64,
                                     rect.height as f64,
-                                ]
+                                ];
+                                bounds
+                                    .iter()
+                                    .all(|value| value.is_finite())
+                                    .then_some(bounds)
                             }),
                         })
                     })
@@ -656,13 +660,17 @@ impl<T: UserEvent> RuntimeApplication<T> {
                     visible,
                     selected: element_attr(element, "aria-selected") == Some("true")
                         || element_attr(element, "selected").is_some(),
-                    bounds: rect.map(|rect| {
-                        [
+                    bounds: rect.and_then(|rect| {
+                        let bounds = [
                             rect.x as f64,
                             rect.y as f64,
                             rect.width as f64,
                             rect.height as f64,
-                        ]
+                        ];
+                        bounds
+                            .iter()
+                            .all(|value| value.is_finite())
+                            .then_some(bounds)
                     }),
                 })
             })

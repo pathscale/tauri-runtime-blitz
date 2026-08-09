@@ -458,7 +458,12 @@ pub fn encode_response(
     let result = ToolCallResult {
         content: vec![TextContent {
             content_type: "text".into(),
-            text: serde_json::to_string(&structured_content)?,
+            // structuredContent is the typed payload consumed by the local
+            // client. Repeating a full DOM snapshot as text doubled the frame
+            // and could cross endpoint-libs' 16 MiB safety limit, which closed
+            // an otherwise healthy socket. Keep the required human-readable
+            // MCP content concise and send the snapshot exactly once.
+            text: response_summary(response),
         }],
         structured_content,
         is_error: matches!(response, DebugResponse::Error(_)),
@@ -467,6 +472,22 @@ pub fn encode_response(
         Some(id),
         serde_json::to_value(result)?,
     )))
+}
+
+fn response_summary(response: &DebugResponse) -> String {
+    match response {
+        DebugResponse::Ack => "ok".into(),
+        DebugResponse::AgentSnapshot(snapshot) => {
+            format!("semantic snapshot with {} nodes", snapshot.nodes.len())
+        }
+        #[cfg(feature = "diagnostics")]
+        DebugResponse::Snapshot(_) => "diagnostic snapshot".into(),
+        #[cfg(feature = "diagnostics")]
+        DebugResponse::Metrics(_) => "renderer metrics".into(),
+        #[cfg(feature = "diagnostics")]
+        DebugResponse::Idle(_) => "renderer idle".into(),
+        DebugResponse::Error(error) => error.message.clone(),
+    }
 }
 
 pub fn decode_response(
