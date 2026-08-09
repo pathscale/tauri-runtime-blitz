@@ -36,8 +36,10 @@ use crate::{
 };
 
 type DocumentFactory = dyn Fn(&str) -> Result<ScriptDocument, String> + Send + Sync + 'static;
+type RuntimeTrace = dyn Fn(&str) + Send + Sync + 'static;
 
 static DOCUMENT_FACTORY: OnceLock<RwLock<Option<Arc<DocumentFactory>>>> = OnceLock::new();
+static RUNTIME_TRACE: OnceLock<RwLock<Option<Arc<RuntimeTrace>>>> = OnceLock::new();
 
 thread_local! {
     static CURRENT_BLITZ_APPLICATION: std::cell::Cell<*const ()> = const {
@@ -64,6 +66,25 @@ pub fn set_document_factory(
         .get_or_init(|| RwLock::new(None))
         .write()
         .unwrap() = Some(Arc::new(factory));
+}
+
+/// Install lifecycle tracing for embedders diagnosing native runtime startup.
+pub fn set_runtime_trace(trace: impl Fn(&str) + Send + Sync + 'static) {
+    *RUNTIME_TRACE
+        .get_or_init(|| RwLock::new(None))
+        .write()
+        .unwrap() = Some(Arc::new(trace));
+}
+
+fn runtime_trace(message: &str) {
+    let callback = RUNTIME_TRACE
+        .get_or_init(|| RwLock::new(None))
+        .read()
+        .unwrap()
+        .clone();
+    if let Some(callback) = callback {
+        callback(message);
+    }
 }
 
 fn create_document(url: &str) -> tauri_runtime::Result<ScriptDocument> {
@@ -353,15 +374,19 @@ impl<T: UserEvent> RuntimeApplication<T> {
 
 impl<T: UserEvent> ApplicationHandler for RuntimeApplication<T> {
     fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        runtime_trace("runtime can_create_surfaces entered");
         if !self.ready {
             self.ready = true;
             CURRENT_BLITZ_APPLICATION.with(|current| {
                 current.set(&self.blitz as *const _ as *const ());
                 let _guard = CurrentApplicationGuard;
+                runtime_trace("Tauri Ready emission started");
                 self.emit(RunEvent::Ready);
+                runtime_trace("Tauri Ready emission completed");
             });
         }
         self.blitz.get_mut().can_create_surfaces(event_loop);
+        runtime_trace("runtime can_create_surfaces completed");
     }
 
     fn destroy_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -369,8 +394,10 @@ impl<T: UserEvent> ApplicationHandler for RuntimeApplication<T> {
     }
 
     fn resumed(&mut self, event_loop: &dyn ActiveEventLoop) {
+        runtime_trace("runtime resumed entered");
         self.blitz.get_mut().resumed(event_loop);
         self.emit(RunEvent::Resumed);
+        runtime_trace("runtime resumed completed");
     }
 
     fn suspended(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -431,7 +458,10 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
     type EventLoopProxy = BlitzEventLoopProxy<T>;
 
     fn new(_args: RuntimeInitArgs) -> tauri_runtime::Result<Self> {
+        runtime_trace("BlitzRuntime::new entered");
+        runtime_trace("native event-loop construction started");
         let event_loop = create_default_event_loop();
+        runtime_trace("native event-loop construction completed");
         let (proxy, blitz_receiver) = BlitzShellProxy::new(event_loop.create_proxy());
         let (sender, receiver) = channel();
         let context = BlitzRuntimeContext {
@@ -448,6 +478,7 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
             callback: None,
             ready: false,
         };
+        runtime_trace("BlitzRuntime::new completed");
         Ok(Self {
             event_loop,
             application: RefCell::new(Some(application)),
@@ -539,14 +570,17 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
     }
 
     fn run<F: FnMut(RunEvent<T>) + 'static>(self, callback: F) {
+        runtime_trace("BlitzRuntime::run entered");
         let mut application = self
             .application
             .into_inner()
             .expect("Blitz runtime application already consumed");
         application.callback = Some(Box::new(callback));
+        runtime_trace("native event loop run_app started");
         if let Err(error) = self.event_loop.run_app(application) {
             eprintln!("tauri-runtime-blitz: event loop failed: {error}");
         }
+        runtime_trace("native event loop run_app returned");
     }
 }
 
@@ -561,6 +595,7 @@ fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
     pending: PendingWindow<T, BlitzRuntime<T>>,
     after_window_creation: Option<F>,
 ) -> tauri_runtime::Result<DetachedWindow<T, BlitzRuntime<T>>> {
+    runtime_trace("native window registration entered");
     let id = context.next_window_id();
     let label = pending.label;
     let builder = pending.window_builder;
@@ -595,6 +630,7 @@ fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
         }
     });
     application.add_window(window);
+    runtime_trace("native window queued");
 
     Ok(DetachedWindow {
         id,

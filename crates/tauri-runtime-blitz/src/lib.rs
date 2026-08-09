@@ -18,6 +18,7 @@ pub use script_queue::ScriptQueue;
 mod runtime;
 pub use runtime::{
     BlitzEventLoopProxy, BlitzRuntime, BlitzRuntimeHandle, builder, set_document_factory,
+    set_runtime_trace,
 };
 mod webview;
 pub use webview::{BlitzWebviewDispatcher, PreparedBlitzWebview, prepare_pending_webview};
