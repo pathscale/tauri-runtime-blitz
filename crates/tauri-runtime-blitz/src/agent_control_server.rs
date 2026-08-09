@@ -6,9 +6,11 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use endpoint_libs::libs::ws::MessageStream;
+#[cfg(test)]
+use endpoint_libs::libs::ws::WireMessage;
 use endpoint_libs::libs::ws::mcp_wire::{INVALID_REQUEST, JsonRpcError};
 use endpoint_libs::libs::ws::transport::{TransportStream, framed_json};
-use endpoint_libs::libs::ws::{MessageStream, WireMessage};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
 

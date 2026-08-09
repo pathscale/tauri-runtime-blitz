@@ -72,6 +72,7 @@ pub enum AgentControlRequest {
 pub enum DiagnosticsRequest {
     Observe { streams: Vec<DebugStream> },
     Snapshot(SnapshotRequest),
+    Metrics,
     WaitForIdle,
 }
 
@@ -82,6 +83,8 @@ pub enum DebugResponse {
     AgentSnapshot(AgentSnapshot),
     #[cfg(feature = "diagnostics")]
     Snapshot(DebugSnapshot),
+    #[cfg(feature = "diagnostics")]
+    Metrics(RendererMetrics),
     #[cfg(feature = "diagnostics")]
     Idle(RevisionSet),
     Error(DebugError),
@@ -209,6 +212,7 @@ pub struct DebugSnapshot {
     pub active_element: Option<u64>,
     pub dom: Option<serde_json::Value>,
     pub layout: Option<serde_json::Value>,
+    pub metrics: RendererMetrics,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -682,6 +686,28 @@ mod tests {
         assert_eq!(
             decode_agent_event(encode_agent_event(&event).unwrap()).unwrap(),
             event
+        );
+    }
+
+    #[cfg(feature = "diagnostics")]
+    #[test]
+    fn diagnostics_metrics_request_and_response_round_trip() {
+        let id = JsonRpcId::Number(23);
+        assert_eq!(
+            decode_diagnostics_request(
+                encode_diagnostics_request(id.clone(), &DiagnosticsRequest::Metrics).unwrap()
+            )
+            .unwrap(),
+            (id.clone(), DiagnosticsRequest::Metrics)
+        );
+
+        let response = DebugResponse::Metrics(RendererMetrics {
+            resident_bytes: Some(4096),
+            ..Default::default()
+        });
+        assert_eq!(
+            decode_response(encode_response(id.clone(), &response).unwrap()).unwrap(),
+            (id, response)
         );
     }
 }

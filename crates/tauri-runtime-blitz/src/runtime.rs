@@ -34,7 +34,9 @@ use winit::window::{WindowAttributes, WindowButtons, WindowLevel};
 use winit::platform::macos::{ApplicationHandlerExtMacOS, WindowAttributesMacOS};
 
 #[cfg(all(feature = "diagnostics", unix))]
-use crate::control_protocol::DiagnosticsRequest;
+use crate::control_protocol::{
+    DebugSnapshot, DiagnosticsRequest, FrameMetrics, RendererMetrics, RevisionSet, SnapshotRequest,
+};
 use crate::window_dispatch::{BlitzWindowDispatcher, NativeWindowState};
 use crate::{
     BlitzWebviewDispatcher, BlitzWindowBuilder, PreparedBlitzWebview, prepare_pending_webview,
@@ -571,6 +573,146 @@ impl<T: UserEvent> RuntimeApplication<T> {
         }
     }
 
+    #[cfg(all(feature = "diagnostics", unix))]
+    fn handle_builtin_diagnostics(&mut self, request: DiagnosticsRequest) -> DebugResponse {
+        match request {
+            DiagnosticsRequest::Snapshot(request) => self
+                .collect_diagnostics(request)
+                .map(DebugResponse::Snapshot)
+                .unwrap_or_else(DebugResponse::Error),
+            DiagnosticsRequest::Metrics => self
+                .collect_diagnostics(SnapshotRequest {
+                    include_dom: false,
+                    include_layout: false,
+                    include_computed_style: false,
+                })
+                .map(|snapshot| DebugResponse::Metrics(snapshot.metrics))
+                .unwrap_or_else(DebugResponse::Error),
+            DiagnosticsRequest::WaitForIdle => self
+                .collect_diagnostics(SnapshotRequest {
+                    include_dom: false,
+                    include_layout: false,
+                    include_computed_style: false,
+                })
+                .map(|snapshot| DebugResponse::Idle(snapshot.revisions))
+                .unwrap_or_else(DebugResponse::Error),
+            DiagnosticsRequest::Observe { .. } => control_error(
+                "streamingUnavailable",
+                "diagnostic subscriptions are not implemented; request snapshots or metrics",
+            ),
+        }
+    }
+
+    #[cfg(all(feature = "diagnostics", unix))]
+    fn collect_diagnostics(
+        &mut self,
+        request: SnapshotRequest,
+    ) -> Result<DebugSnapshot, DebugError> {
+        if request.include_computed_style {
+            return Err(debug_error(
+                "computedStyleUnavailable",
+                "computed-style snapshots are not implemented",
+            ));
+        }
+        self.agent_revision += 1;
+        let revision = self.agent_revision;
+        let started = std::time::Instant::now();
+        let document = self
+            .agent_document()
+            .ok_or_else(|| debug_error("documentUnavailable", "no active script document"))?;
+        let poll_started = std::time::Instant::now();
+        let mut polls = 0u64;
+        for _ in 0..100 {
+            polls += 1;
+            if !document.poll(None) {
+                break;
+            }
+        }
+        let poll_ms = poll_started.elapsed().as_secs_f64() * 1_000.0;
+        let layout_started = std::time::Instant::now();
+        document.inner_mut().resolve(0.0);
+        let layout_ms = layout_started.elapsed().as_secs_f64() * 1_000.0;
+        let inner = document.inner();
+        let active_element = inner.get_focussed_node_id().map(|id| id as u64);
+        let nodes: Vec<SemanticNode> = inner
+            .tree()
+            .iter()
+            .filter_map(|(id, node)| {
+                let element = node.element_data()?;
+                let rect = inner.get_client_bounding_rect(id);
+                let visible = node_is_visible(&inner, id)
+                    && rect
+                        .as_ref()
+                        .is_some_and(|rect| rect.width > 0.0 && rect.height > 0.0);
+                let role = semantic_role(element);
+                Some(SemanticNode {
+                    id: id as u64,
+                    parent: semantic_parent(&inner, id, None).map(|id| id as u64),
+                    name: semantic_name(element, node, &role),
+                    role,
+                    value: semantic_value(element),
+                    enabled: element_attr(element, "disabled").is_none()
+                        && element_attr(element, "aria-disabled") != Some("true"),
+                    visible,
+                    selected: element_attr(element, "aria-selected") == Some("true")
+                        || element_attr(element, "selected").is_some(),
+                    bounds: rect.map(|rect| {
+                        [
+                            rect.x as f64,
+                            rect.y as f64,
+                            rect.width as f64,
+                            rect.height as f64,
+                        ]
+                    }),
+                })
+            })
+            .collect();
+        let total_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        let revisions = RevisionSet {
+            document: revision,
+            style: revision,
+            layout: revision,
+            paint: revision,
+        };
+        let metrics = RendererMetrics {
+            revisions: revisions.clone(),
+            queue_depth: 0,
+            invalidations_coalesced: polls.saturating_sub(1),
+            frame: Some(FrameMetrics {
+                input_to_present_ms: total_ms,
+                style_ms: poll_ms,
+                layout_ms,
+                scene_ms: 0.0,
+                submit_ms: 0.0,
+                present_ms: 0.0,
+                total_ms,
+            }),
+            resident_bytes: resident_bytes(),
+        };
+        let dom = request
+            .include_dom
+            .then(|| serde_json::to_value(&nodes).unwrap_or(serde_json::Value::Null));
+        let layout = request.include_layout.then(|| {
+            serde_json::Value::Array(
+                nodes
+                    .iter()
+                    .filter_map(|node| {
+                        node.bounds
+                            .map(|bounds| serde_json::json!({"nodeId": node.id, "bounds": bounds}))
+                    })
+                    .collect(),
+            )
+        });
+        Ok(DebugSnapshot {
+            revisions,
+            active_window: Some("blitz-main".into()),
+            active_element,
+            dom,
+            layout,
+            metrics,
+        })
+    }
+
     #[cfg(all(feature = "agent-control", unix))]
     fn perform_agent_action(&mut self, action: AgentAction) -> Result<(), DebugError> {
         match action {
@@ -798,20 +940,31 @@ impl<T: UserEvent> RuntimeApplication<T> {
                             .read()
                             .unwrap()
                             .clone()
-                            .map(|handler| handler(request))
-                            .unwrap_or_else(|| {
-                                DebugResponse::Error(DebugError {
-                                    code: "diagnosticsHandlerUnavailable".into(),
-                                    message: "the embedder has not installed a diagnostics handler"
-                                        .into(),
-                                })
-                            }),
+                            .map(|handler| handler(request.clone()))
+                            .unwrap_or_else(|| self.handle_builtin_diagnostics(request)),
                     };
                     let _ = response.send(result);
                 }
             }
         }
     }
+}
+
+#[cfg(all(feature = "diagnostics", unix))]
+fn resident_bytes() -> Option<u64> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    std::str::from_utf8(&output.stdout)
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .and_then(|kilobytes| kilobytes.checked_mul(1_024))
 }
 
 impl<T: UserEvent> ApplicationHandler for RuntimeApplication<T> {
