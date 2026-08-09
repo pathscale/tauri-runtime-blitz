@@ -8,10 +8,13 @@ publish.workspace = true
 
 [dependencies]
 anyrender_vello = { git = "https://github.com/pathscale/ps-anyrender.git", rev = "36b1fffb41104451ac0de763862a60137d9348b1" }
+blitz-dom = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729", optional = true }
 blitz-script = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729", features = ["system-fonts"] }
 blitz-shell = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729", default-features = false, features = ["clipboard", "svg"] }
+blitz-traits = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729", optional = true }
 http = "1"
 endpoint-libs = { git = "https://github.com/pathscale/endpoint-libs.git", rev = "7eff4d850f1c84c1104c0729c68f50711940b7fb", default-features = false, features = ["agent-control"], optional = true }
+keyboard-types = { version = "0.7", optional = true }
 raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
@@ -24,12 +27,11 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync"], 
 
 [features]
 default = ["agent-control"]
-agent-control = ["dep:endpoint-libs", "dep:serde", "dep:serde_json", "dep:tokio"]
+agent-control = ["dep:blitz-dom", "dep:blitz-traits", "dep:endpoint-libs", "dep:keyboard-types", "dep:serde", "dep:serde_json", "dep:tokio"]
 debug-control = ["blitz-script/debug-control", "blitz-shell/debug-control"]
 diagnostics = ["agent-control", "debug-control"]
 devtools = ["tauri-runtime/devtools"]
 macos-private-api = []
 
 [dev-dependencies]
-blitz-dom = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729" }
 tauri = { version = "=2.11.5", default-features = false, features = ["test"] }

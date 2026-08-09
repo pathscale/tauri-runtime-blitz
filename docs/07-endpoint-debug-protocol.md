@@ -66,9 +66,12 @@ control does not retain debug logs, DOM snapshots, or renderer telemetry.
    framing, with no token or session handshake. Implemented.
 2. Local Unix-socket listener, mode-0600 descriptor lifecycle, MCP initialize
    and tool discovery, and multi-client connections. Implemented.
-3. UI-thread agent and diagnostics handler boundaries. Implemented; semantic
-   tree extraction, relaunch, idle barriers, snapshots, and native
-   key/pointer/wheel injection remain to be connected to Blitz.
+3. UI-thread agent and diagnostics handler boundaries. Implemented. The agent
+   plane now extracts a semantic tree with ancestor-aware visibility and drives
+   click, set-value, scroll-into-view, physical key, pointer, wheel, and modifier
+   input through `ScriptDocument`'s native event path. Relaunch uses LaunchServices
+   for a macOS app bundle (and the current executable elsewhere), then exits the
+   old instance cleanly. Diagnostic idle/snapshot handlers remain to be connected.
 4. Renderer instrumentation and pushed metrics/errors.
 5. WebDriver compatibility adapter backed by the endpoint protocol; delete the
    old bespoke server after its acceptance suite passes unchanged.

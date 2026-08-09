@@ -42,8 +42,21 @@ use crate::{
 #[cfg(all(feature = "agent-control", unix))]
 use crate::{
     agent_control_server::{AgentControlServer, ControlBridge, ControlBridgeRequest},
-    control_protocol::{AgentControlRequest, DebugError, DebugResponse},
+    control_protocol::{
+        AgentAction, AgentControlRequest, AgentSnapshot, DebugError, DebugResponse, InputCommand,
+        KeyPhase, Modifiers as ControlModifiers, PointerPhase, SemanticNode,
+    },
 };
+#[cfg(all(feature = "agent-control", unix))]
+use blitz_dom::Document;
+#[cfg(all(feature = "agent-control", unix))]
+use blitz_traits::events::{
+    BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta,
+    BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, Point, PointerCoords,
+    PointerDetails, UiEvent,
+};
+#[cfg(all(feature = "agent-control", unix))]
+use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 
 type DocumentFactory = dyn Fn(&str) -> Result<ScriptDocument, String> + Send + Sync + 'static;
 type RuntimeTrace = dyn Fn(&str) + Send + Sync + 'static;
@@ -402,6 +415,12 @@ struct RuntimeApplication<T: UserEvent> {
     ready: bool,
     #[cfg(all(feature = "agent-control", unix))]
     _agent_control: AgentControlServer,
+    #[cfg(all(feature = "agent-control", unix))]
+    agent_revision: u64,
+    #[cfg(all(feature = "agent-control", unix))]
+    agent_pointer: (f32, f32),
+    #[cfg(all(feature = "agent-control", unix))]
+    agent_buttons: MouseEventButtons,
 }
 
 impl<T: UserEvent> RuntimeApplication<T> {
@@ -409,6 +428,282 @@ impl<T: UserEvent> RuntimeApplication<T> {
         if let Some(callback) = &mut self.callback {
             callback(event);
         }
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    fn agent_document(&mut self) -> Option<&mut ScriptDocument> {
+        self.blitz
+            .get_mut()
+            .windows
+            .values_mut()
+            .find_map(|view| view.try_downcast_doc_mut::<ScriptDocument>())
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    fn handle_builtin_agent(&mut self, request: AgentControlRequest) -> DebugResponse {
+        match request {
+            AgentControlRequest::Inspect { root, max_depth } => {
+                self.agent_revision += 1;
+                let revision = self.agent_revision;
+                let Some(document) = self.agent_document() else {
+                    return control_error("documentUnavailable", "no active script document");
+                };
+                for _ in 0..100 {
+                    if !document.poll(None) {
+                        break;
+                    }
+                }
+                document.inner_mut().resolve(0.0);
+                let inner = document.inner();
+                let root = root.and_then(|id| usize::try_from(id).ok());
+                if root.is_some_and(|id| inner.get_node(id).is_none()) {
+                    return control_error("unknownNode", "the requested root node does not exist");
+                }
+                let focused_node = inner.get_focussed_node_id().map(|id| id as u64);
+                let nodes = inner
+                    .tree()
+                    .iter()
+                    .filter_map(|(id, node)| {
+                        let element = node.element_data()?;
+                        semantic_depth(&inner, id, root, max_depth)?;
+                        let rect = inner.get_client_bounding_rect(id);
+                        let visible = node_is_visible(&inner, id)
+                            && rect
+                                .as_ref()
+                                .is_some_and(|rect| rect.width > 0.0 && rect.height > 0.0);
+                        let role = semantic_role(element);
+                        let name = semantic_name(element, node, &role);
+                        let value = semantic_value(element);
+                        let parent = semantic_parent(&inner, id, root).map(|id| id as u64);
+                        Some(SemanticNode {
+                            id: id as u64,
+                            parent,
+                            role,
+                            name,
+                            value,
+                            enabled: element_attr(element, "disabled").is_none()
+                                && element_attr(element, "aria-disabled") != Some("true"),
+                            visible,
+                            selected: element_attr(element, "aria-selected") == Some("true")
+                                || element_attr(element, "selected").is_some(),
+                            bounds: rect.map(|rect| {
+                                [
+                                    rect.x as f64,
+                                    rect.y as f64,
+                                    rect.width as f64,
+                                    rect.height as f64,
+                                ]
+                            }),
+                        })
+                    })
+                    .collect();
+                DebugResponse::AgentSnapshot(AgentSnapshot {
+                    revision,
+                    active_window: Some("blitz-main".into()),
+                    focused_node,
+                    nodes,
+                })
+            }
+            AgentControlRequest::Act(action) => match self.perform_agent_action(action) {
+                Ok(()) => {
+                    self.agent_revision += 1;
+                    DebugResponse::Ack
+                }
+                Err(error) => DebugResponse::Error(error),
+            },
+            AgentControlRequest::Relaunch => AGENT_CONTROL_HANDLER
+                .get_or_init(|| RwLock::new(None))
+                .read()
+                .unwrap()
+                .clone()
+                .map(|handler| handler(AgentControlRequest::Relaunch))
+                .unwrap_or_else(|| match relaunch_current_process() {
+                    Ok(()) => DebugResponse::Ack,
+                    Err(error) => DebugResponse::Error(DebugError {
+                        code: "relaunchFailed".into(),
+                        message: error.to_string(),
+                    }),
+                }),
+            AgentControlRequest::Quit => DebugResponse::Ack,
+        }
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    fn perform_agent_action(&mut self, action: AgentAction) -> Result<(), DebugError> {
+        match action {
+            AgentAction::Click { node_id } => {
+                let node_id = usize::try_from(node_id)
+                    .map_err(|_| debug_error("unknownNode", "node id is out of range"))?;
+                let (x, y) = {
+                    let document = self
+                        .agent_document()
+                        .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
+                    document.inner_mut().resolve(0.0);
+                    let inner = document.inner();
+                    if !node_is_visible(&inner, node_id) {
+                        return Err(debug_error("notInteractable", "node is not visible"));
+                    }
+                    let rect = inner
+                        .get_client_bounding_rect(node_id)
+                        .filter(|rect| rect.width > 0.0 && rect.height > 0.0)
+                        .ok_or_else(|| debug_error("notInteractable", "node has no layout box"))?;
+                    (
+                        (rect.x + rect.width / 2.0) as f32,
+                        (rect.y + rect.height / 2.0) as f32,
+                    )
+                };
+                self.agent_pointer = (x, y);
+                let down = pointer_event(
+                    self.agent_pointer,
+                    MouseEventButton::Main,
+                    MouseEventButtons::Primary,
+                    KeyboardModifiers::empty(),
+                );
+                let document = self.agent_document().unwrap();
+                document.handle_ui_event(UiEvent::PointerMove(pointer_event(
+                    (x, y),
+                    MouseEventButton::Main,
+                    MouseEventButtons::default(),
+                    KeyboardModifiers::empty(),
+                )));
+                document.handle_ui_event(UiEvent::PointerDown(down));
+                document.handle_ui_event(UiEvent::PointerUp(pointer_event(
+                    (x, y),
+                    MouseEventButton::Main,
+                    MouseEventButtons::default(),
+                    KeyboardModifiers::empty(),
+                )));
+            }
+            AgentAction::SetValue { node_id, value } => {
+                let node_id = usize::try_from(node_id)
+                    .map_err(|_| debug_error("unknownNode", "node id is out of range"))?;
+                let document = self
+                    .agent_document()
+                    .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
+                if !document
+                    .inner()
+                    .get_node(node_id)
+                    .and_then(|node| node.element_data())
+                    .is_some_and(|element| element.text_input_data().is_some())
+                {
+                    return Err(debug_error("notEditable", "node is not a text input"));
+                }
+                document.inner_mut().set_focus_to(node_id);
+                let mut select_all = KeyboardModifiers::empty();
+                #[cfg(target_os = "macos")]
+                select_all.insert(KeyboardModifiers::META);
+                #[cfg(not(target_os = "macos"))]
+                select_all.insert(KeyboardModifiers::CONTROL);
+                document.handle_ui_event(UiEvent::KeyDown(key_event(
+                    KeyPhase::Down,
+                    Key::Character("a".into()),
+                    Code::KeyA,
+                    select_all,
+                )));
+                document.handle_ui_event(UiEvent::KeyUp(key_event(
+                    KeyPhase::Up,
+                    Key::Character("a".into()),
+                    Code::KeyA,
+                    select_all,
+                )));
+                document.handle_ui_event(UiEvent::Ime(BlitzImeEvent::Commit(value)));
+            }
+            AgentAction::ScrollIntoView { node_id } => {
+                let node_id = usize::try_from(node_id)
+                    .map_err(|_| debug_error("unknownNode", "node id is out of range"))?;
+                let document = self
+                    .agent_document()
+                    .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
+                if document.inner().get_node(node_id).is_none() {
+                    return Err(debug_error("unknownNode", "node does not exist"));
+                }
+                document.inner_mut().scroll_to_node(node_id);
+            }
+            AgentAction::Input(input) => self.perform_agent_input(input)?,
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    fn perform_agent_input(&mut self, input: InputCommand) -> Result<(), DebugError> {
+        match input {
+            InputCommand::Key {
+                phase,
+                key,
+                code,
+                modifiers,
+            } => {
+                let parsed_key = key
+                    .parse::<Key>()
+                    .unwrap_or_else(|_| Key::Character(key.into()));
+                let parsed_code = code.parse::<Code>().unwrap_or(Code::Unidentified);
+                let event = key_event(
+                    phase,
+                    parsed_key,
+                    parsed_code,
+                    keyboard_modifiers(modifiers),
+                );
+                let document = self
+                    .agent_document()
+                    .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
+                document.handle_ui_event(match phase {
+                    KeyPhase::Down => UiEvent::KeyDown(event),
+                    KeyPhase::Up => UiEvent::KeyUp(event),
+                });
+            }
+            InputCommand::Pointer {
+                phase,
+                x,
+                y,
+                button,
+                modifiers,
+            } => {
+                let button = mouse_button(button)?;
+                self.agent_pointer = (x as f32, y as f32);
+                match phase {
+                    PointerPhase::Down => self.agent_buttons.insert(button.into()),
+                    PointerPhase::Up | PointerPhase::Cancel => {
+                        self.agent_buttons.remove(button.into())
+                    }
+                    PointerPhase::Move => {}
+                }
+                let event = pointer_event(
+                    self.agent_pointer,
+                    button,
+                    self.agent_buttons,
+                    keyboard_modifiers(modifiers),
+                );
+                let document = self
+                    .agent_document()
+                    .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
+                document.handle_ui_event(match phase {
+                    PointerPhase::Move => UiEvent::PointerMove(event),
+                    PointerPhase::Down => UiEvent::PointerDown(event),
+                    PointerPhase::Up => UiEvent::PointerUp(event),
+                    PointerPhase::Cancel => UiEvent::PointerCancel(event),
+                });
+            }
+            InputCommand::Wheel {
+                delta_x,
+                delta_y,
+                modifiers,
+                ..
+            } => {
+                let coords = pointer_coords(self.agent_pointer);
+                let event = BlitzWheelEvent {
+                    delta: BlitzWheelDelta::Pixels(delta_x, delta_y),
+                    coords,
+                    buttons: self.agent_buttons,
+                    mods: keyboard_modifiers(modifiers),
+                    element: Point::default(),
+                };
+                let document = self
+                    .agent_document()
+                    .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
+                document.handle_ui_event(UiEvent::Wheel(event));
+            }
+        }
+        Ok(())
     }
 
     fn drain_runtime_messages(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -436,20 +731,19 @@ impl<T: UserEvent> RuntimeApplication<T> {
                             event_loop.exit();
                             DebugResponse::Ack
                         }
-                        ControlBridgeRequest::Agent(request) => AGENT_CONTROL_HANDLER
-                            .get_or_init(|| RwLock::new(None))
-                            .read()
-                            .unwrap()
-                            .clone()
-                            .map(|handler| handler(request))
-                            .unwrap_or_else(|| {
-                                DebugResponse::Error(DebugError {
-                                    code: "handlerUnavailable".into(),
-                                    message:
-                                        "the embedder has not installed an agent-control handler"
-                                            .into(),
-                                })
-                            }),
+                        ControlBridgeRequest::Agent(AgentControlRequest::Relaunch) => {
+                            let result = self.handle_builtin_agent(AgentControlRequest::Relaunch);
+                            if matches!(result, DebugResponse::Ack) {
+                                self.emit(RunEvent::ExitRequested {
+                                    code: Some(0),
+                                    tx: channel().0,
+                                });
+                                self.emit(RunEvent::Exit);
+                                event_loop.exit();
+                            }
+                            result
+                        }
+                        ControlBridgeRequest::Agent(request) => self.handle_builtin_agent(request),
                         #[cfg(feature = "diagnostics")]
                         ControlBridgeRequest::Diagnostics(request) => DIAGNOSTICS_HANDLER
                             .get_or_init(|| RwLock::new(None))
@@ -593,10 +887,10 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
         };
         #[cfg(all(feature = "agent-control", unix))]
         let agent_control = {
-            let sender = context.sender.clone();
+            let control_context = context.clone();
             let bridge: ControlBridge = Arc::new(move |request| {
                 let (response, receiver) = tokio::sync::oneshot::channel();
-                let _ = sender.send(RuntimeMessage::Control { request, response });
+                let _ = control_context.send(RuntimeMessage::Control { request, response });
                 receiver
             });
             AgentControlServer::start(bridge)
@@ -619,6 +913,12 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
             ready: false,
             #[cfg(all(feature = "agent-control", unix))]
             _agent_control: agent_control,
+            #[cfg(all(feature = "agent-control", unix))]
+            agent_revision: 0,
+            #[cfg(all(feature = "agent-control", unix))]
+            agent_pointer: (0.0, 0.0),
+            #[cfg(all(feature = "agent-control", unix))]
+            agent_buttons: MouseEventButtons::default(),
         };
         runtime_trace("BlitzRuntime::new completed");
         Ok(Self {
@@ -724,6 +1024,279 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
         }
         runtime_trace("native event loop run_app returned");
     }
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn element_attr<'a>(element: &'a blitz_dom::ElementData, name: &str) -> Option<&'a str> {
+    element
+        .attrs()
+        .iter()
+        .find(|attribute| attribute.name.local.as_ref() == name)
+        .map(|attribute| attribute.value.as_str())
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn semantic_role(element: &blitz_dom::ElementData) -> String {
+    if let Some(role) = element_attr(element, "role") {
+        return role.into();
+    }
+    let tag = element.name.local.as_ref();
+    match tag {
+        "a" if element_attr(element, "href").is_some() => "link",
+        "button" => "button",
+        "textarea" => "textbox",
+        "select" => "combobox",
+        "option" => "option",
+        "img" => "img",
+        "nav" => "navigation",
+        "main" => "main",
+        "form" => "form",
+        "ul" | "ol" => "list",
+        "li" => "listitem",
+        "table" => "table",
+        "tr" => "row",
+        "td" | "th" => "cell",
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => "heading",
+        "input" => match element_attr(element, "type").unwrap_or("text") {
+            "checkbox" => "checkbox",
+            "radio" => "radio",
+            "button" | "submit" | "reset" => "button",
+            "range" => "slider",
+            _ => "textbox",
+        },
+        _ => "generic",
+    }
+    .into()
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn semantic_name(element: &blitz_dom::ElementData, node: &blitz_dom::Node, role: &str) -> String {
+    let name = element_attr(element, "aria-label")
+        .or_else(|| element_attr(element, "alt"))
+        .or_else(|| element_attr(element, "title"))
+        .map(str::to_string)
+        .or_else(|| {
+            matches!(role, "button" | "link" | "heading" | "option").then(|| node.text_content())
+        })
+        .unwrap_or_default();
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(512)
+        .collect()
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn semantic_value(element: &blitz_dom::ElementData) -> Option<String> {
+    element
+        .text_input_data()
+        .map(|input| input.editor.text().to_string())
+        .or_else(|| {
+            element
+                .checkbox_input_checked()
+                .map(|checked| checked.to_string())
+        })
+        .or_else(|| element_attr(element, "aria-valuenow").map(str::to_string))
+        .or_else(|| element_attr(element, "value").map(str::to_string))
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn semantic_depth(
+    document: &blitz_dom::BaseDocument,
+    node_id: usize,
+    root: Option<usize>,
+    max_depth: u32,
+) -> Option<u32> {
+    let mut current = Some(node_id);
+    let mut depth = 0_u32;
+    loop {
+        let id = current?;
+        if Some(id) == root {
+            break;
+        }
+        let node = document.get_node(id)?;
+        current = node.parent;
+        if current
+            .and_then(|parent| document.get_node(parent))
+            .and_then(blitz_dom::Node::element_data)
+            .is_some()
+        {
+            depth = depth.saturating_add(1);
+        }
+        if root.is_none() && current.is_none() {
+            break;
+        }
+    }
+    (max_depth == 0 || depth <= max_depth).then_some(depth)
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn semantic_parent(
+    document: &blitz_dom::BaseDocument,
+    node_id: usize,
+    root: Option<usize>,
+) -> Option<usize> {
+    if Some(node_id) == root {
+        return None;
+    }
+    let mut current = document.get_node(node_id)?.parent;
+    while let Some(id) = current {
+        let node = document.get_node(id)?;
+        if node.element_data().is_some() {
+            return Some(id);
+        }
+        current = node.parent;
+    }
+    None
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn node_is_visible(document: &blitz_dom::BaseDocument, node_id: usize) -> bool {
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        let Some(node) = document.get_node(id) else {
+            return false;
+        };
+        if !node.flags.is_in_document() || node.is_display_none() {
+            return false;
+        }
+        if let Some(element) = node.element_data()
+            && (element_attr(element, "hidden").is_some()
+                || element_attr(element, "aria-hidden") == Some("true"))
+        {
+            return false;
+        }
+        current = node.parent;
+    }
+    true
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn keyboard_modifiers(modifiers: ControlModifiers) -> KeyboardModifiers {
+    let mut output = KeyboardModifiers::empty();
+    output.set(KeyboardModifiers::SHIFT, modifiers.shift);
+    output.set(KeyboardModifiers::CONTROL, modifiers.control);
+    output.set(KeyboardModifiers::ALT, modifiers.alt);
+    output.set(KeyboardModifiers::META, modifiers.meta);
+    output
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn key_event(phase: KeyPhase, key: Key, code: Code, modifiers: KeyboardModifiers) -> BlitzKeyEvent {
+    let text = match (&key, phase) {
+        (Key::Character(value), KeyPhase::Down)
+            if !modifiers.intersects(
+                KeyboardModifiers::CONTROL | KeyboardModifiers::ALT | KeyboardModifiers::META,
+            ) =>
+        {
+            Some(value.clone().into())
+        }
+        _ => None,
+    };
+    BlitzKeyEvent {
+        key,
+        code,
+        modifiers,
+        location: Location::Standard,
+        is_auto_repeating: false,
+        is_composing: false,
+        state: match phase {
+            KeyPhase::Down => KeyState::Pressed,
+            KeyPhase::Up => KeyState::Released,
+        },
+        text,
+    }
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn pointer_coords((x, y): (f32, f32)) -> PointerCoords {
+    PointerCoords {
+        page_x: x,
+        page_y: y,
+        screen_x: x,
+        screen_y: y,
+        client_x: x,
+        client_y: y,
+    }
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn pointer_event(
+    position: (f32, f32),
+    button: MouseEventButton,
+    buttons: MouseEventButtons,
+    modifiers: KeyboardModifiers,
+) -> BlitzPointerEvent {
+    BlitzPointerEvent {
+        id: BlitzPointerId::Mouse,
+        is_primary: true,
+        coords: pointer_coords(position),
+        button,
+        buttons,
+        mods: modifiers,
+        details: PointerDetails::default(),
+        element: Point::default(),
+        active_pointers: Default::default(),
+    }
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn mouse_button(button: u16) -> Result<MouseEventButton, DebugError> {
+    match button {
+        0 => Ok(MouseEventButton::Main),
+        1 => Ok(MouseEventButton::Auxiliary),
+        2 => Ok(MouseEventButton::Secondary),
+        3 => Ok(MouseEventButton::Fourth),
+        4 => Ok(MouseEventButton::Fifth),
+        _ => Err(debug_error(
+            "unsupportedButton",
+            "pointer button must be 0 through 4",
+        )),
+    }
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn relaunch_current_process() -> std::io::Result<()> {
+    let executable = std::env::current_exe()?;
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = containing_app_bundle(&executable) {
+        let mut command = std::process::Command::new("/usr/bin/open");
+        command.arg("-n");
+        if let Some(descriptor) = std::env::var_os("TAURI_BLITZ_CONTROL_DESCRIPTOR") {
+            command.arg("--env").arg(format!(
+                "TAURI_BLITZ_CONTROL_DESCRIPTOR={}",
+                descriptor.to_string_lossy()
+            ));
+        }
+        command.arg(bundle).spawn()?;
+        return Ok(());
+    }
+    std::process::Command::new(executable)
+        .args(std::env::args_os().skip(1))
+        .spawn()?;
+    Ok(())
+}
+
+#[cfg(all(feature = "agent-control", target_os = "macos"))]
+fn containing_app_bundle(executable: &std::path::Path) -> Option<std::path::PathBuf> {
+    executable
+        .ancestors()
+        .find(|path| path.extension().is_some_and(|extension| extension == "app"))
+        .map(std::path::Path::to_path_buf)
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn debug_error(code: &str, message: &str) -> DebugError {
+    DebugError {
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn control_error(code: &str, message: &str) -> DebugResponse {
+    DebugResponse::Error(debug_error(code, message))
 }
 
 #[cfg(feature = "debug-control")]
@@ -923,5 +1496,59 @@ mod tests {
         );
         assert!(!attributes.visible);
         assert!(!attributes.decorations);
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn semantic_visibility_includes_display_none_ancestors() {
+        let mut document = ScriptDocument::from_html(
+            "<main><button id='shown'>Run</button><div style='display:none'><button id='hidden'>Hidden</button></div></main>",
+            DocumentConfig::default(),
+        );
+        document.inner_mut().resolve(0.0);
+        let inner = document.inner();
+        let node_id = |value: &str| {
+            inner
+                .tree()
+                .iter()
+                .find_map(|(id, node)| {
+                    node.element_data()
+                        .is_some_and(|element| element_attr(element, "id") == Some(value))
+                        .then_some(id)
+                })
+                .unwrap()
+        };
+        let shown = node_id("shown");
+        let hidden = node_id("hidden");
+        assert!(node_is_visible(&inner, shown));
+        assert!(!node_is_visible(&inner, hidden));
+        let shown_node = inner.get_node(shown).unwrap();
+        let shown_element = shown_node.element_data().unwrap();
+        assert_eq!(semantic_role(shown_element), "button");
+        assert_eq!(semantic_name(shown_element, shown_node, "button"), "Run");
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn native_key_event_preserves_physical_code_and_modifiers() {
+        let event = key_event(
+            KeyPhase::Down,
+            Key::Character("2".into()),
+            Code::Digit2,
+            KeyboardModifiers::META,
+        );
+        assert_eq!(event.code, Code::Digit2);
+        assert!(event.modifiers.meta());
+        assert!(event.text.is_none());
+    }
+
+    #[cfg(all(feature = "agent-control", target_os = "macos"))]
+    #[test]
+    fn relaunch_uses_the_app_bundle_instead_of_the_inner_macos_binary() {
+        let executable = std::path::Path::new("/Applications/AgencyZero.app/Contents/MacOS/az-gui");
+        assert_eq!(
+            containing_app_bundle(executable).as_deref(),
+            Some(std::path::Path::new("/Applications/AgencyZero.app"))
+        );
     }
 }
