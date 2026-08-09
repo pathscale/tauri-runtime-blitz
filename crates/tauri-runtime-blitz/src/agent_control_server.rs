@@ -224,6 +224,10 @@ mod tests {
         AgentAction, AgentControlRequest, DebugResponse, MCP_INITIALIZE, MCP_TOOLS_LIST,
         decode_response, decode_rpc, encode_agent_request, encode_rpc,
     };
+    #[cfg(feature = "diagnostics")]
+    use crate::control_protocol::{
+        DiagnosticsRequest, RendererMetrics, encode_diagnostics_request,
+    };
 
     #[tokio::test(flavor = "current_thread")]
     async fn local_server_is_mcp_compatible_and_needs_no_session_or_token() {
@@ -316,6 +320,45 @@ mod tests {
         );
 
         drop(server);
+    }
+
+    #[cfg(feature = "diagnostics")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn diagnostics_metrics_reach_the_runtime_bridge_over_mcp() {
+        let bridge: ControlBridge = Arc::new(|request| {
+            let (sender, receiver) = oneshot::channel();
+            assert!(matches!(
+                request,
+                ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Metrics)
+            ));
+            sender
+                .send(DebugResponse::Metrics(RendererMetrics {
+                    resident_bytes: Some(8192),
+                    ..Default::default()
+                }))
+                .unwrap();
+            receiver
+        });
+        let server = AgentControlServer::start(bridge).unwrap();
+        let stream = UnixStream::connect(server.socket_path()).await.unwrap();
+        let mut stream = TransportStream::new(framed_json(stream));
+        let id = JsonRpcId::Number(91);
+
+        stream
+            .send(encode_diagnostics_request(id.clone(), &DiagnosticsRequest::Metrics).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            decode_response(stream.recv().await.unwrap().unwrap()).unwrap(),
+            (
+                id,
+                DebugResponse::Metrics(RendererMetrics {
+                    resident_bytes: Some(8192),
+                    ..Default::default()
+                })
+            )
+        );
     }
 
     #[test]
