@@ -173,9 +173,16 @@ async fn handle_connection(stream: UnixStream, bridge: ControlBridge) {
                 encode_rpc_error(None, JsonRpcError::new(INVALID_REQUEST, error.to_string()))
             }
         };
-        let Ok(response) = response else {
-            break;
-        };
+        let response = response.unwrap_or_else(|error| {
+            encode_rpc_error(
+                None,
+                JsonRpcError::new(
+                    INVALID_REQUEST,
+                    format!("could not encode response: {error}"),
+                ),
+            )
+            .expect("the fallback JSON-RPC error is serializable")
+        });
         if stream.send(response).await.is_err() {
             break;
         }
@@ -226,7 +233,8 @@ mod tests {
     };
     #[cfg(feature = "diagnostics")]
     use crate::control_protocol::{
-        DiagnosticsRequest, RendererMetrics, encode_diagnostics_request,
+        DebugSnapshot, DiagnosticsRequest, RendererMetrics, RevisionSet, SnapshotRequest,
+        encode_diagnostics_request,
     };
 
     #[tokio::test(flavor = "current_thread")]
@@ -355,6 +363,84 @@ mod tests {
                 id,
                 DebugResponse::Metrics(RendererMetrics {
                     resident_bytes: Some(8192),
+                    ..Default::default()
+                })
+            )
+        );
+    }
+
+    #[cfg(feature = "diagnostics")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn large_snapshot_keeps_the_socket_open_for_follow_up_requests() {
+        const LARGE_DOM_BYTES: usize = 9 * 1024 * 1024;
+        let bridge: ControlBridge = Arc::new(|request| {
+            let (sender, receiver) = oneshot::channel();
+            let response = match request {
+                ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Snapshot(_)) => {
+                    DebugResponse::Snapshot(DebugSnapshot {
+                        revisions: RevisionSet::default(),
+                        active_window: Some("main".into()),
+                        active_element: None,
+                        dom: Some(serde_json::Value::String("x".repeat(LARGE_DOM_BYTES))),
+                        layout: None,
+                        metrics: RendererMetrics::default(),
+                    })
+                }
+                ControlBridgeRequest::Diagnostics(DiagnosticsRequest::Metrics) => {
+                    DebugResponse::Metrics(RendererMetrics {
+                        resident_bytes: Some(4096),
+                        ..Default::default()
+                    })
+                }
+                _ => panic!("unexpected request"),
+            };
+            sender.send(response).unwrap();
+            receiver
+        });
+        let server = AgentControlServer::start(bridge).unwrap();
+        let stream = UnixStream::connect(server.socket_path()).await.unwrap();
+        let mut stream = TransportStream::new(framed_json(stream));
+
+        let snapshot_id = JsonRpcId::Number(92);
+        stream
+            .send(
+                encode_diagnostics_request(
+                    snapshot_id.clone(),
+                    &DiagnosticsRequest::Snapshot(SnapshotRequest {
+                        include_dom: true,
+                        include_layout: false,
+                        include_computed_style: false,
+                    }),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (response_id, response) =
+            decode_response(stream.recv().await.unwrap().unwrap()).unwrap();
+        assert_eq!(response_id, snapshot_id);
+        let DebugResponse::Snapshot(snapshot) = response else {
+            panic!("expected a diagnostic snapshot")
+        };
+        assert_eq!(
+            snapshot.dom.unwrap().as_str().unwrap().len(),
+            LARGE_DOM_BYTES
+        );
+
+        let metrics_id = JsonRpcId::Number(93);
+        stream
+            .send(
+                encode_diagnostics_request(metrics_id.clone(), &DiagnosticsRequest::Metrics)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            decode_response(stream.recv().await.unwrap().unwrap()).unwrap(),
+            (
+                metrics_id,
+                DebugResponse::Metrics(RendererMetrics {
+                    resident_bytes: Some(4096),
                     ..Default::default()
                 })
             )

@@ -13,7 +13,7 @@ blitz-script = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf
 blitz-shell = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729", default-features = false, features = ["clipboard", "svg"] }
 blitz-traits = { git = "https://github.com/pathscale/ps-blitz.git", rev = "30faf47191530dac80e4ddeec77174a41184a729", optional = true }
 http = "1"
-endpoint-libs = { git = "https://github.com/pathscale/endpoint-libs.git", rev = "7eff4d850f1c84c1104c0729c68f50711940b7fb", default-features = false, features = ["agent-control"], optional = true }
+endpoint-libs = { git = "https://github.com/pathscale/endpoint-libs.git", rev = "85833797465d745362d6340673768ef439fb2811", default-features = false, features = ["agent-control"], optional = true }
 keyboard-types = { version = "0.7", optional = true }
 raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"], optional = true }
