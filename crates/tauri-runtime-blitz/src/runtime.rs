@@ -482,8 +482,16 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
             windows: Arc::new(Mutex::new(HashMap::new())),
             main_thread_id: current().id(),
         };
+        let mut blitz = BlitzApplication::new(proxy, blitz_receiver);
+        #[cfg(feature = "debug-control")]
+        if let Some(controller) =
+            blitz_script::DebugController::start_from_env(env!("CARGO_PKG_VERSION"))
+                .map_err(|error| Error::CreateWebview(Box::new(error)))?
+        {
+            blitz.set_debug_controller(controller);
+        }
         let application = RuntimeApplication {
-            blitz: RefCell::new(BlitzApplication::new(proxy, blitz_receiver)),
+            blitz: RefCell::new(blitz),
             receiver,
             callback: None,
             ready: false,
