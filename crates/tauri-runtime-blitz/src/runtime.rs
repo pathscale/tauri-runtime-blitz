@@ -157,10 +157,21 @@ impl<T: UserEvent> BlitzRuntimeContext<T> {
         Ok(())
     }
 
+    /// Queued tasks only run when the event loop next drains them, so a caller
+    /// already on the main thread that waits for its task would wait forever:
+    /// the drain is that thread's own job. Tauri does exactly that. Menu
+    /// construction posts the work here and blocks on the reply, and `setup`
+    /// runs on the main thread inside `can_create_surfaces`, so queuing there
+    /// hangs the app before the first window. Running inline is what
+    /// tauri-runtime-wry does, for the same reason.
     pub(crate) fn run_on_main_thread(
         &self,
         task: impl FnOnce() + Send + 'static,
     ) -> tauri_runtime::Result<()> {
+        if current().id() == self.main_thread_id {
+            task();
+            return Ok(());
+        }
         self.send(RuntimeMessage::Task(Box::new(task)))
     }
 
@@ -625,6 +636,17 @@ fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
         attributes,
     )
     .with_on_created(move |native| {
+        /*
+         * The attributes above were snapshotted at registration, but the native
+         * window is not created until the event loop can make surfaces, and
+         * Tauri's `setup` runs in between. A `show()` in there reaches the
+         * config and finds no native window to forward to, so replaying the
+         * current visibility here is what makes it take effect. Without this a
+         * window configured `visible: false` and shown once the app is ready,
+         * which is the standard way to hide a slow boot, stays hidden forever.
+         */
+        let visible = state_for_creation.config.lock().unwrap().visible;
+        native.set_visible(visible);
         *state_for_creation.native.lock().unwrap() = Some(native);
         if let Some(callback) = after_window_creation {
             let marker = PhantomData;
