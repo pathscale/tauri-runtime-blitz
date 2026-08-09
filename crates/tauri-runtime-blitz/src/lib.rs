@@ -21,14 +21,14 @@ pub mod control_protocol;
 mod script_queue;
 pub use script_queue::ScriptQueue;
 mod runtime;
-#[cfg(all(feature = "agent-control", unix))]
-pub use runtime::set_agent_control_handler;
 #[cfg(all(feature = "diagnostics", unix))]
 pub use runtime::set_diagnostics_handler;
 pub use runtime::{
     BlitzEventLoopProxy, BlitzRuntime, BlitzRuntimeHandle, builder, set_document_factory,
     set_runtime_trace,
 };
+#[cfg(all(feature = "agent-control", unix))]
+pub use runtime::{agent_control_enabled, set_agent_control_enabled, set_agent_control_handler};
 mod webview;
 pub use webview::{BlitzWebviewDispatcher, PreparedBlitzWebview, prepare_pending_webview};
 mod window_dispatch;

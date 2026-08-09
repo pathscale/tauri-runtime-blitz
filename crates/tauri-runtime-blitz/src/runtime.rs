@@ -4,7 +4,7 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::thread::{ThreadId, current};
 
 use anyrender_vello::VelloWindowRenderer;
@@ -69,6 +69,9 @@ static DOCUMENT_FACTORY: OnceLock<RwLock<Option<Arc<DocumentFactory>>>> = OnceLo
 static RUNTIME_TRACE: OnceLock<RwLock<Option<Arc<RuntimeTrace>>>> = OnceLock::new();
 #[cfg(all(feature = "agent-control", unix))]
 static AGENT_CONTROL_HANDLER: OnceLock<RwLock<Option<Arc<AgentControlHandler>>>> = OnceLock::new();
+#[cfg(all(feature = "agent-control", unix))]
+static AGENT_CONTROL_RUNTIME: OnceLock<Mutex<Option<Weak<Mutex<AgentControlRuntime>>>>> =
+    OnceLock::new();
 #[cfg(all(feature = "diagnostics", unix))]
 static DIAGNOSTICS_HANDLER: OnceLock<RwLock<Option<Arc<DiagnosticsHandler>>>> = OnceLock::new();
 
@@ -116,6 +119,46 @@ pub fn set_agent_control_handler(
         .get_or_init(|| RwLock::new(None))
         .write()
         .unwrap() = Some(Arc::new(handler));
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+struct AgentControlRuntime {
+    bridge: ControlBridge,
+    server: Option<AgentControlServer>,
+}
+
+/// Enable or disable the complete local agent-control interface at runtime.
+///
+/// Disabled means no listener and no discovery descriptor. The runtime starts
+/// disabled; embedders opt in after loading their owner-controlled setting.
+#[cfg(all(feature = "agent-control", unix))]
+pub fn set_agent_control_enabled(enabled: bool) -> std::io::Result<()> {
+    let runtime = AGENT_CONTROL_RUNTIME
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(Weak::upgrade)
+        .ok_or_else(|| std::io::Error::other("the Blitz runtime is not initialized"))?;
+    let mut runtime = runtime.lock().unwrap();
+    match (enabled, runtime.server.is_some()) {
+        (true, false) => runtime.server = Some(AgentControlServer::start(runtime.bridge.clone())?),
+        (false, true) => runtime.server = None,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Whether the complete local agent-control interface is currently listening.
+#[cfg(all(feature = "agent-control", unix))]
+pub fn agent_control_enabled() -> bool {
+    AGENT_CONTROL_RUNTIME
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(Weak::upgrade)
+        .is_some_and(|runtime| runtime.lock().unwrap().server.is_some())
 }
 
 /// Install the UI-thread handler used by the feature-gated diagnostics tool.
@@ -414,7 +457,7 @@ struct RuntimeApplication<T: UserEvent> {
     callback: Option<Box<dyn FnMut(RunEvent<T>)>>,
     ready: bool,
     #[cfg(all(feature = "agent-control", unix))]
-    _agent_control: AgentControlServer,
+    _agent_control: Arc<Mutex<AgentControlRuntime>>,
     #[cfg(all(feature = "agent-control", unix))]
     agent_revision: u64,
     #[cfg(all(feature = "agent-control", unix))]
@@ -898,8 +941,15 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
                 let _ = control_context.send(RuntimeMessage::Control { request, response });
                 receiver
             });
-            AgentControlServer::start(bridge)
-                .map_err(|error| Error::CreateWebview(Box::new(error)))?
+            let runtime = Arc::new(Mutex::new(AgentControlRuntime {
+                bridge,
+                server: None,
+            }));
+            *AGENT_CONTROL_RUNTIME
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .unwrap() = Some(Arc::downgrade(&runtime));
+            runtime
         };
         let mut blitz = BlitzApplication::new(proxy, blitz_receiver);
         #[cfg(feature = "debug-control")]
@@ -1545,6 +1595,30 @@ mod tests {
         assert_eq!(event.code, Code::Digit2);
         assert!(event.modifiers.meta());
         assert!(event.text.is_none());
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn control_interface_is_absent_until_explicitly_enabled() {
+        let bridge: ControlBridge = Arc::new(|_| {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let _ = sender.send(DebugResponse::Ack);
+            receiver
+        });
+        let runtime = Arc::new(Mutex::new(AgentControlRuntime {
+            bridge,
+            server: None,
+        }));
+        *AGENT_CONTROL_RUNTIME
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap() = Some(Arc::downgrade(&runtime));
+
+        assert!(!agent_control_enabled());
+        set_agent_control_enabled(true).unwrap();
+        assert!(agent_control_enabled());
+        set_agent_control_enabled(false).unwrap();
+        assert!(!agent_control_enabled());
     }
 
     #[cfg(all(feature = "agent-control", target_os = "macos"))]

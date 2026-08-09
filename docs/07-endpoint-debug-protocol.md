@@ -15,11 +15,14 @@ This plane is for an AI agent or automation client operating the product:
 - window/app lifecycle including quit and restart with automatic reconnect;
 - pushed tree/lifecycle changes for efficient observation.
 
-Agent control is the runtime's default `agent-control` feature. On macOS it uses
-a Unix-domain socket rather than localhost HTTP, so the app can leave it
-available without a browser-reachable port, token ceremony, or exclusive
-automation session. Calls use the standard MCP `tools/call` method with the
-`blitz.agent.control` tool; pushed state uses JSON-RPC notifications.
+Agent-control code is included by the runtime's default `agent-control` feature,
+but the complete interface starts disabled. The owner-controlled runtime setting
+must call `set_agent_control_enabled(true)` before any listener or descriptor
+exists; turning it off drops both. On macOS the enabled interface uses a
+Unix-domain socket rather than localhost HTTP, avoiding a browser-reachable port,
+token ceremony, or exclusive automation session. Calls use the standard MCP
+`tools/call` method with the `blitz.agent.control` tool; pushed state uses JSON-RPC
+notifications.
 
 Use W3C WebDriver/BiDi input semantics and WAI-ARIA/accessibility-tree semantics
 where they fit. MCP may expose discovery and coarse application tools, while
@@ -41,7 +44,8 @@ control does not retain debug logs, DOM snapshots, or renderer telemetry.
 
 ## Contract
 
-- The local agent-control listener is part of the default runtime feature.
+- The local agent-control listener and descriptor are absent by default and are
+  created/destroyed together by the owner-controlled runtime setting.
 - Diagnostics are absent unless the `diagnostics` feature is compiled and
   explicitly enabled at launch.
 - Local transport only. There is no authentication or exclusive session.
