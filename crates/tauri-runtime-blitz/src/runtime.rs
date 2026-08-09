@@ -487,10 +487,12 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
         };
         let mut blitz = BlitzApplication::new(proxy, blitz_receiver);
         #[cfg(feature = "debug-control")]
-        if let Some(controller) =
+        if let Some(mut controller) =
             blitz_script::DebugController::start_from_env(env!("CARGO_PKG_VERSION"))
                 .map_err(|error| Error::CreateWebview(Box::new(error)))?
         {
+            let (width, height) = debug_screenshot_size_from_env().unwrap_or((1344, 932));
+            controller = controller.with_cpu_screenshot(width, height);
             blitz.set_debug_controller(controller);
         }
         let application = RuntimeApplication {
@@ -603,6 +605,15 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
         }
         runtime_trace("native event loop run_app returned");
     }
+}
+
+#[cfg(feature = "debug-control")]
+fn debug_screenshot_size_from_env() -> Option<(u32, u32)> {
+    let value = std::env::var("TAURI_BLITZ_DRIVER_SCREENSHOT_SIZE").ok()?;
+    let (width, height) = value.split_once('x')?;
+    let width = width.parse().ok()?;
+    let height = height.parse().ok()?;
+    (width > 0 && height > 0).then_some((width, height))
 }
 
 /// Create a Tauri builder configured for the Blitz runtime.
