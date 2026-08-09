@@ -33,16 +33,31 @@ use winit::window::{WindowAttributes, WindowButtons, WindowLevel};
 #[cfg(target_os = "macos")]
 use winit::platform::macos::{ApplicationHandlerExtMacOS, WindowAttributesMacOS};
 
+#[cfg(all(feature = "diagnostics", unix))]
+use crate::control_protocol::DiagnosticsRequest;
 use crate::window_dispatch::{BlitzWindowDispatcher, NativeWindowState};
 use crate::{
     BlitzWebviewDispatcher, BlitzWindowBuilder, PreparedBlitzWebview, prepare_pending_webview,
 };
+#[cfg(all(feature = "agent-control", unix))]
+use crate::{
+    agent_control_server::{AgentControlServer, ControlBridge, ControlBridgeRequest},
+    control_protocol::{AgentControlRequest, DebugError, DebugResponse},
+};
 
 type DocumentFactory = dyn Fn(&str) -> Result<ScriptDocument, String> + Send + Sync + 'static;
 type RuntimeTrace = dyn Fn(&str) + Send + Sync + 'static;
+#[cfg(all(feature = "agent-control", unix))]
+type AgentControlHandler = dyn Fn(AgentControlRequest) -> DebugResponse + Send + Sync + 'static;
+#[cfg(all(feature = "diagnostics", unix))]
+type DiagnosticsHandler = dyn Fn(DiagnosticsRequest) -> DebugResponse + Send + Sync + 'static;
 
 static DOCUMENT_FACTORY: OnceLock<RwLock<Option<Arc<DocumentFactory>>>> = OnceLock::new();
 static RUNTIME_TRACE: OnceLock<RwLock<Option<Arc<RuntimeTrace>>>> = OnceLock::new();
+#[cfg(all(feature = "agent-control", unix))]
+static AGENT_CONTROL_HANDLER: OnceLock<RwLock<Option<Arc<AgentControlHandler>>>> = OnceLock::new();
+#[cfg(all(feature = "diagnostics", unix))]
+static DIAGNOSTICS_HANDLER: OnceLock<RwLock<Option<Arc<DiagnosticsHandler>>>> = OnceLock::new();
 
 thread_local! {
     static CURRENT_BLITZ_APPLICATION: std::cell::Cell<*const ()> = const {
@@ -79,6 +94,28 @@ pub fn set_runtime_trace(trace: impl Fn(&str) + Send + Sync + 'static) {
         .unwrap() = Some(Arc::new(trace));
 }
 
+/// Install the UI-thread handler used by the local agent-control socket.
+#[cfg(all(feature = "agent-control", unix))]
+pub fn set_agent_control_handler(
+    handler: impl Fn(AgentControlRequest) -> DebugResponse + Send + Sync + 'static,
+) {
+    *AGENT_CONTROL_HANDLER
+        .get_or_init(|| RwLock::new(None))
+        .write()
+        .unwrap() = Some(Arc::new(handler));
+}
+
+/// Install the UI-thread handler used by the feature-gated diagnostics tool.
+#[cfg(all(feature = "diagnostics", unix))]
+pub fn set_diagnostics_handler(
+    handler: impl Fn(DiagnosticsRequest) -> DebugResponse + Send + Sync + 'static,
+) {
+    *DIAGNOSTICS_HANDLER
+        .get_or_init(|| RwLock::new(None))
+        .write()
+        .unwrap() = Some(Arc::new(handler));
+}
+
 fn runtime_trace(message: &str) {
     let callback = RUNTIME_TRACE
         .get_or_init(|| RwLock::new(None))
@@ -110,6 +147,11 @@ enum RuntimeMessage<T: UserEvent> {
     Task(Task),
     UserEvent(T),
     RequestExit(i32),
+    #[cfg(all(feature = "agent-control", unix))]
+    Control {
+        request: ControlBridgeRequest,
+        response: tokio::sync::oneshot::Sender<DebugResponse>,
+    },
 }
 
 pub(crate) struct BlitzRuntimeContext<T: UserEvent> {
@@ -358,6 +400,8 @@ struct RuntimeApplication<T: UserEvent> {
     receiver: Receiver<RuntimeMessage<T>>,
     callback: Option<Box<dyn FnMut(RunEvent<T>)>>,
     ready: bool,
+    #[cfg(all(feature = "agent-control", unix))]
+    _agent_control: AgentControlServer,
 }
 
 impl<T: UserEvent> RuntimeApplication<T> {
@@ -379,6 +423,49 @@ impl<T: UserEvent> RuntimeApplication<T> {
                     });
                     self.emit(RunEvent::Exit);
                     event_loop.exit();
+                }
+                #[cfg(all(feature = "agent-control", unix))]
+                RuntimeMessage::Control { request, response } => {
+                    let result = match request {
+                        ControlBridgeRequest::Agent(AgentControlRequest::Quit) => {
+                            self.emit(RunEvent::ExitRequested {
+                                code: Some(0),
+                                tx: channel().0,
+                            });
+                            self.emit(RunEvent::Exit);
+                            event_loop.exit();
+                            DebugResponse::Ack
+                        }
+                        ControlBridgeRequest::Agent(request) => AGENT_CONTROL_HANDLER
+                            .get_or_init(|| RwLock::new(None))
+                            .read()
+                            .unwrap()
+                            .clone()
+                            .map(|handler| handler(request))
+                            .unwrap_or_else(|| {
+                                DebugResponse::Error(DebugError {
+                                    code: "handlerUnavailable".into(),
+                                    message:
+                                        "the embedder has not installed an agent-control handler"
+                                            .into(),
+                                })
+                            }),
+                        #[cfg(feature = "diagnostics")]
+                        ControlBridgeRequest::Diagnostics(request) => DIAGNOSTICS_HANDLER
+                            .get_or_init(|| RwLock::new(None))
+                            .read()
+                            .unwrap()
+                            .clone()
+                            .map(|handler| handler(request))
+                            .unwrap_or_else(|| {
+                                DebugResponse::Error(DebugError {
+                                    code: "diagnosticsHandlerUnavailable".into(),
+                                    message: "the embedder has not installed a diagnostics handler"
+                                        .into(),
+                                })
+                            }),
+                    };
+                    let _ = response.send(result);
                 }
             }
         }
@@ -504,6 +591,17 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
             windows: Arc::new(Mutex::new(HashMap::new())),
             main_thread_id: current().id(),
         };
+        #[cfg(all(feature = "agent-control", unix))]
+        let agent_control = {
+            let sender = context.sender.clone();
+            let bridge: ControlBridge = Arc::new(move |request| {
+                let (response, receiver) = tokio::sync::oneshot::channel();
+                let _ = sender.send(RuntimeMessage::Control { request, response });
+                receiver
+            });
+            AgentControlServer::start(bridge)
+                .map_err(|error| Error::CreateWebview(Box::new(error)))?
+        };
         let mut blitz = BlitzApplication::new(proxy, blitz_receiver);
         #[cfg(feature = "debug-control")]
         if let Some(mut controller) =
@@ -519,6 +617,8 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
             receiver,
             callback: None,
             ready: false,
+            #[cfg(all(feature = "agent-control", unix))]
+            _agent_control: agent_control,
         };
         runtime_trace("BlitzRuntime::new completed");
         Ok(Self {
