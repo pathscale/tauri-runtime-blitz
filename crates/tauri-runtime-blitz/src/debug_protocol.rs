@@ -768,6 +768,23 @@ pub(crate) fn encode_rpc(message: JsonRpcMessage) -> Result<WireMessage, DebugPr
     Ok(WireMessage::Text(serde_json::to_string(&message)?))
 }
 
+/// The request id of an incoming frame, recovered without consuming it.
+///
+/// A decode failure still has to be answered, and answered *to the caller*. A
+/// JSON-RPC client matches responses by id, so an error carrying `id: null` is
+/// delivered and then discarded, and the caller waits until it times out. That
+/// turns "you named a field wrong" into "the app is hung", which is a much
+/// worse and much slower thing to debug.
+pub fn peek_request_id(message: &WireMessage) -> Option<JsonRpcId> {
+    let WireMessage::Text(text) = message else {
+        return None;
+    };
+    match parse(text) {
+        Ok(JsonRpcMessage::Request(request)) => request.id,
+        _ => None,
+    }
+}
+
 pub(crate) fn decode_rpc(message: WireMessage) -> Result<JsonRpcMessage, DebugProtocolError> {
     let WireMessage::Text(text) = message else {
         return Err(DebugProtocolError::NonTextFrame);

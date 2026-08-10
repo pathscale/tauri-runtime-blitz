@@ -19,6 +19,7 @@ use crate::control_protocol::DiagnosticsRequest;
 use crate::control_protocol::{
     AgentControlRequest, DebugDescriptor, DebugResponse, IncomingRequest, decode_incoming,
     encode_initialize_response, encode_response, encode_rpc_error, encode_tools_list_response,
+    peek_request_id,
 };
 
 pub(crate) enum ControlBridgeRequest {
@@ -136,39 +137,46 @@ async fn handle_connection(stream: UnixStream, bridge: ControlBridge) {
     let mut stream = TransportStream::new(framed_json(stream));
     while let Some(message) = stream.recv().await {
         let response = match message {
-            Ok(message) => match decode_incoming(message) {
-                Ok(IncomingRequest::Initialize { id }) => {
-                    encode_initialize_response(id, env!("CARGO_PKG_VERSION"))
+            Ok(message) => {
+                // Recovered before the typed decode consumes the frame, so a
+                // malformed request is answered to the caller rather than to
+                // nobody. See peek_request_id.
+                let request_id = peek_request_id(&message);
+                match decode_incoming(message) {
+                    Ok(IncomingRequest::Initialize { id }) => {
+                        encode_initialize_response(id, env!("CARGO_PKG_VERSION"))
+                    }
+                    Ok(IncomingRequest::Initialized) => continue,
+                    Ok(IncomingRequest::ToolsList { id }) => encode_tools_list_response(id),
+                    Ok(IncomingRequest::Agent { id, request }) => {
+                        let response = bridge(ControlBridgeRequest::Agent(request))
+                            .await
+                            .unwrap_or_else(|_| {
+                                DebugResponse::Error(crate::control_protocol::DebugError {
+                                    code: "bridgeClosed".into(),
+                                    message: "the UI-thread control bridge closed".into(),
+                                })
+                            });
+                        encode_response(id, &response)
+                    }
+                    #[cfg(feature = "diagnostics")]
+                    Ok(IncomingRequest::Diagnostics { id, request }) => {
+                        let response = bridge(ControlBridgeRequest::Diagnostics(request))
+                            .await
+                            .unwrap_or_else(|_| {
+                                DebugResponse::Error(crate::control_protocol::DebugError {
+                                    code: "bridgeClosed".into(),
+                                    message: "the UI-thread diagnostics bridge closed".into(),
+                                })
+                            });
+                        encode_response(id, &response)
+                    }
+                    Err(error) => encode_rpc_error(
+                        request_id,
+                        JsonRpcError::new(INVALID_REQUEST, error.to_string()),
+                    ),
                 }
-                Ok(IncomingRequest::Initialized) => continue,
-                Ok(IncomingRequest::ToolsList { id }) => encode_tools_list_response(id),
-                Ok(IncomingRequest::Agent { id, request }) => {
-                    let response = bridge(ControlBridgeRequest::Agent(request))
-                        .await
-                        .unwrap_or_else(|_| {
-                            DebugResponse::Error(crate::control_protocol::DebugError {
-                                code: "bridgeClosed".into(),
-                                message: "the UI-thread control bridge closed".into(),
-                            })
-                        });
-                    encode_response(id, &response)
-                }
-                #[cfg(feature = "diagnostics")]
-                Ok(IncomingRequest::Diagnostics { id, request }) => {
-                    let response = bridge(ControlBridgeRequest::Diagnostics(request))
-                        .await
-                        .unwrap_or_else(|_| {
-                            DebugResponse::Error(crate::control_protocol::DebugError {
-                                code: "bridgeClosed".into(),
-                                message: "the UI-thread diagnostics bridge closed".into(),
-                            })
-                        });
-                    encode_response(id, &response)
-                }
-                Err(error) => {
-                    encode_rpc_error(None, JsonRpcError::new(INVALID_REQUEST, error.to_string()))
-                }
-            },
+            }
             Err(error) => {
                 encode_rpc_error(None, JsonRpcError::new(INVALID_REQUEST, error.to_string()))
             }
