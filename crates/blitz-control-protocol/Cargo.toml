@@ -12,7 +12,7 @@ publish.workspace = true
 # is `cargo tree -p blitz-control-protocol`, which should stay in the dozens
 # of crates rather than the hundreds.
 [dependencies]
-endpoint-libs = { path = "../../../endpoint-libs", default-features = false, features = [
+endpoint-libs = { version = "2.1.5", default-features = false, features = [
     "agent-control",
 ] }
 serde = { version = "1", features = ["derive"] }

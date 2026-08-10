@@ -7,15 +7,15 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-anyrender_vello = { package = "ps-anyrender-vello", path = "../../../ps-anyrender/crates/anyrender_vello" }
-anyrender_vello_hybrid = { path = "../../../ps-anyrender/crates/anyrender_vello_hybrid", optional = true }
-blitz-dom = { package = "ps-blitz-dom", path = "../../../ps-blitz-render/packages/blitz-dom", optional = true }
-blitz-script = { package = "ps-blitz-script", path = "../../../ps-blitz-render/packages/blitz-script", features = ["system-fonts"] }
+anyrender_vello = { package = "ps-anyrender-vello", version = "0.13.0" }
+anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", version = "0.9.0", optional = true }
+blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", rev = "40d0153770a17c5456ac222b89bbb318601bb99d", optional = true }
+blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", rev = "40d0153770a17c5456ac222b89bbb318601bb99d", features = ["system-fonts"] }
 blitz-control-protocol = { path = "../blitz-control-protocol", optional = true }
-blitz-shell = { package = "ps-blitz-shell", path = "../../../ps-blitz-render/packages/blitz-shell", default-features = false, features = ["clipboard", "svg"] }
-blitz-traits = { package = "ps-blitz-traits", path = "../../../ps-blitz-render/packages/blitz-traits", optional = true }
+blitz-shell = { package = "ps-blitz-shell", git = "https://github.com/pathscale/ps-blitz.git", rev = "40d0153770a17c5456ac222b89bbb318601bb99d", default-features = false, features = ["clipboard", "svg"] }
+blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", rev = "40d0153770a17c5456ac222b89bbb318601bb99d", optional = true }
 http = "1"
-endpoint-libs = { path = "../../../endpoint-libs", default-features = false, features = ["agent-control"], optional = true }
+endpoint-libs = { version = "2.1.5", default-features = false, features = ["agent-control"], optional = true }
 keyboard-types = { version = "0.7", optional = true }
 raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"], optional = true }
