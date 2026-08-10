@@ -7,7 +7,10 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::thread::{ThreadId, current};
 
+#[cfg(not(feature = "hybrid-renderer"))]
 use anyrender_vello::VelloWindowRenderer;
+#[cfg(feature = "hybrid-renderer")]
+use anyrender_vello_hybrid::VelloHybridWindowRenderer as VelloWindowRenderer;
 use blitz_script::ScriptDocument;
 use blitz_shell::{
     BlitzApplication, BlitzShellEvent, BlitzShellProxy, WindowConfig as BlitzShellWindowConfig,
@@ -35,7 +38,8 @@ use winit::platform::macos::{ApplicationHandlerExtMacOS, WindowAttributesMacOS};
 
 #[cfg(all(feature = "diagnostics", unix))]
 use crate::control_protocol::{
-    DebugSnapshot, DiagnosticsRequest, FrameMetrics, RendererMetrics, RevisionSet, SnapshotRequest,
+    DebugSnapshot, DiagnosticsRequest, FrameMetrics, FrameWindowMetrics, RendererMetrics,
+    RevisionSet, ScriptMetrics, ScriptSource, SnapshotCost, SnapshotRequest, TimingStats,
 };
 use crate::window_dispatch::{BlitzWindowDispatcher, NativeWindowState};
 use crate::{
@@ -633,9 +637,12 @@ impl<T: UserEvent> RuntimeApplication<T> {
             }
         }
         let poll_ms = poll_started.elapsed().as_secs_f64() * 1_000.0;
-        let layout_started = std::time::Instant::now();
+        // This forces a style and layout pass so the snapshot reports current
+        // geometry. It is work the observer caused, so it is reported as snapshot
+        // cost, never as the cost of a frame the application drew.
+        let resolve_started = std::time::Instant::now();
         document.inner_mut().resolve(0.0);
-        let layout_ms = layout_started.elapsed().as_secs_f64() * 1_000.0;
+        let snapshot_resolve_ms = resolve_started.elapsed().as_secs_f64() * 1_000.0;
         let inner = document.inner();
         let active_element = inner.get_focussed_node_id().map(|id| id as u64);
         let nodes: Vec<SemanticNode> = inner
@@ -676,24 +683,76 @@ impl<T: UserEvent> RuntimeApplication<T> {
             })
             .collect();
         let total_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        // The runtime keeps one counter and stamps it onto all four revision
+        // fields. Style, layout and paint are not versioned independently
+        // anywhere in blitz, so four copies of one number would claim a
+        // resolution that does not exist. Report the counter once, as the
+        // document revision, and leave the rest at zero.
         let revisions = RevisionSet {
             document: revision,
-            style: revision,
-            layout: revision,
-            paint: revision,
+            style: 0,
+            layout: 0,
+            paint: 0,
         };
+        // Real per-frame timings, published by blitz-shell from `View::redraw`.
+        // These describe frames the application actually presented. Everything
+        // measured inside this function describes the snapshot collection instead,
+        // and is reported under `snapshot` so the two never get mixed up again.
+        let frame_stats = blitz_shell::latest_frame_stats();
         let metrics = RendererMetrics {
             revisions: revisions.clone(),
-            queue_depth: 0,
+            queue_depth: None,
             invalidations_coalesced: polls.saturating_sub(1),
-            frame: Some(FrameMetrics {
-                input_to_present_ms: total_ms,
-                style_ms: poll_ms,
-                layout_ms,
-                scene_ms: 0.0,
-                submit_ms: 0.0,
-                present_ms: 0.0,
+            frame: frame_stats.as_ref().map(|stats| FrameMetrics {
+                input_to_present_ms: None,
+                style_ms: None,
+                layout_ms: None,
+                resolve_ms: stats.latest.resolve_ms,
+                scene_ms: stats.latest.paint_ms,
+                submit_ms: None,
+                present_ms: None,
+                renderer_ms: stats.latest.renderer_ms,
+                total_ms: stats.latest.total_ms,
+                age_ms: stats.latest.age_ms,
+            }),
+            frame_window: frame_stats.as_ref().map(|stats| FrameWindowMetrics {
+                frames_total: stats.frames_total,
+                window_frames: stats.window_frames,
+                resolve: timing_stats(stats.resolve),
+                scene: timing_stats(stats.paint),
+                renderer: timing_stats(stats.renderer),
+                total: timing_stats(stats.frame_total),
+                interval: timing_stats(stats.interval),
+                active_fps: stats.active_fps,
+                missed_refreshes: stats.missed_refreshes,
+                display_refresh_hz: stats.display_refresh_hz,
+            }),
+            snapshot: Some(SnapshotCost {
+                poll_ms,
+                resolve_ms: snapshot_resolve_ms,
                 total_ms,
+            }),
+            // The other half of a frame. Everything above this line is the
+            // engine; this is the language runtime the application actually
+            // spends its time in.
+            script: blitz_script::script_stats::latest_script_stats().map(|stats| ScriptMetrics {
+                mean_ms: stats.mean_ms,
+                p95_ms: stats.p95_ms,
+                max_ms: stats.max_ms,
+                window_polls: stats.window_polls,
+                total_polls: stats.total_polls,
+                productive_polls: stats.productive_polls,
+                spent_ms: stats.spent_ms,
+                breakdown: blitz_script::script_stats::work_breakdown()
+                    .into_iter()
+                    .take(12)
+                    .map(|(label, calls, total_ms, worst_ms)| ScriptSource {
+                        label,
+                        calls,
+                        total_ms,
+                        worst_ms,
+                    })
+                    .collect(),
             }),
             resident_bytes: resident_bytes(),
         };
@@ -973,6 +1032,19 @@ fn resident_bytes() -> Option<u64> {
         .parse::<u64>()
         .ok()
         .and_then(|kilobytes| kilobytes.checked_mul(1_024))
+}
+
+/// Carry blitz-shell's timing summary onto the wire type.
+///
+/// The two structs are deliberately separate: the protocol is versioned by this
+/// crate, while the shell type is free to grow fields that have no wire meaning.
+#[cfg(all(feature = "diagnostics", unix))]
+fn timing_stats(stats: blitz_shell::TimingStats) -> TimingStats {
+    TimingStats {
+        mean_ms: stats.mean_ms,
+        p95_ms: stats.p95_ms,
+        max_ms: stats.max_ms,
+    }
 }
 
 impl<T: UserEvent> ApplicationHandler for RuntimeApplication<T> {
