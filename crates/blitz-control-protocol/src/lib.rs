@@ -3,7 +3,33 @@
 //! This is deliberately not WebDriver. It models the native renderer and app
 //! lifecycle directly, supports observation by more than one client, and has
 //! no authentication handshake. Agent control binds only to a local transport;
-//! expensive diagnostics collection remains an explicit compile-time feature.
+//! expensive diagnostics collection remains an explicit compile-time feature
+//! *of the server*, `tauri-runtime-blitz/diagnostics`.
+//!
+//! # Why this is its own crate
+//!
+//! These are the server's own definitions, and a client that hand-rolls the
+//! JSON gets them wrong in ways that do not look like encoding mistakes.
+//! `AgentAction` is adjacently tagged, so `{"action":"click","node_id":9}` is
+//! malformed where `{"action":"click","params":{"node_id":9}}` is correct, and
+//! the difference used to present as a hung application. Sharing the types
+//! makes that a compile error.
+//!
+//! Speaking the protocol must not cost a renderer. `tauri-runtime-blitz` pulls
+//! in tauri, winit, wgpu and blitz, so a measurement tool that depended on it
+//! for these types would build a browser engine to send a wheel event. Nothing
+//! here needs any of that: it is serde plus endpoint-libs' framing.
+//!
+//! # No `diagnostics` feature, on purpose
+//!
+//! The types are inert data definitions and cost nothing to compile, whereas
+//! gating them creates feature skew: cargo unifies features across a build, so
+//! one workspace member asking for diagnostics types while the server crate is
+//! built without them turned `DebugResponse` into a non-exhaustive match in
+//! code nobody had touched. What stays gated in the server is *collection*,
+//! which is where the expense actually is. A build that cannot serve
+//! diagnostics says so by omitting the tool from `tools/list`; see
+//! [`encode_tools_list_response`].
 
 use endpoint_libs::libs::ws::{
     WireMessage,
@@ -21,9 +47,7 @@ pub const MCP_TOOLS_LIST: &str = "tools/list";
 pub const MCP_TOOLS_CALL: &str = "tools/call";
 pub const AGENT_CONTROL_TOOL: &str = "blitz.agent.control";
 pub const AGENT_EVENT_NOTIFICATION: &str = "notifications/blitz/agent";
-#[cfg(feature = "diagnostics")]
 pub const DIAGNOSTICS_TOOL: &str = "blitz.diagnostics";
-#[cfg(feature = "diagnostics")]
 pub const DIAGNOSTICS_EVENT_NOTIFICATION: &str = "notifications/blitz/diagnostics";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -50,7 +74,6 @@ pub enum IncomingRequest {
         id: JsonRpcId,
         request: AgentControlRequest,
     },
-    #[cfg(feature = "diagnostics")]
     Diagnostics {
         id: JsonRpcId,
         request: DiagnosticsRequest,
@@ -66,7 +89,6 @@ pub enum AgentControlRequest {
     Quit,
 }
 
-#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", content = "params", rename_all = "camelCase")]
 pub enum DiagnosticsRequest {
@@ -81,16 +103,12 @@ pub enum DiagnosticsRequest {
 pub enum DebugResponse {
     Ack,
     AgentSnapshot(AgentSnapshot),
-    #[cfg(feature = "diagnostics")]
     Snapshot(DebugSnapshot),
-    #[cfg(feature = "diagnostics")]
     Metrics(RendererMetrics),
-    #[cfg(feature = "diagnostics")]
     Idle(RevisionSet),
     Error(DebugError),
 }
 
-#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", content = "value", rename_all = "camelCase")]
 pub enum DebugEvent {
@@ -108,7 +126,6 @@ pub enum AgentControlEvent {
     Lifecycle(LifecycleEvent),
 }
 
-#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DebugStream {
@@ -118,7 +135,6 @@ pub enum DebugStream {
     RuntimeErrors,
 }
 
-#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotRequest {
@@ -193,7 +209,6 @@ pub enum WheelPhase {
     Ended,
 }
 
-#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RevisionSet {
@@ -206,7 +221,6 @@ pub struct RevisionSet {
     pub paint: u64,
 }
 
-#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DebugSnapshot {
@@ -241,7 +255,6 @@ pub struct SemanticNode {
     pub bounds: Option<[f64; 4]>,
 }
 
-#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RendererMetrics {
@@ -276,7 +289,6 @@ pub struct RendererMetrics {
 }
 
 /// Script execution cost, in milliseconds, over the retained poll window.
-#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptMetrics {
@@ -297,7 +309,6 @@ pub struct ScriptMetrics {
 }
 
 /// One attributed source of script time.
-#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptSource {
@@ -312,7 +323,6 @@ pub struct ScriptSource {
 /// Every `Option` here is a value blitz does not measure. They are left empty on
 /// purpose: a plausible-looking zero is worse than an admitted gap, because it
 /// makes a missing measurement look like a fast one.
-#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameMetrics {
@@ -352,7 +362,6 @@ pub struct FrameMetrics {
 ///
 /// The percentile and maximum matter more than the mean: a one-second average
 /// hides the single slow frame that is the only one a user notices.
-#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimingStats {
@@ -362,7 +371,6 @@ pub struct TimingStats {
 }
 
 /// Aggregate statistics over the recently presented frames.
-#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameWindowMetrics {
@@ -390,7 +398,6 @@ pub struct FrameWindowMetrics {
 }
 
 /// What it cost to answer this diagnostics request.
-#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotCost {
@@ -402,7 +409,6 @@ pub struct SnapshotCost {
     pub total_ms: f64,
 }
 
-#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConsoleEntry {
@@ -411,7 +417,6 @@ pub struct ConsoleEntry {
     pub message: String,
 }
 
-#[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeErrorEntry {
@@ -543,19 +548,29 @@ pub fn encode_initialize_response(
     )))
 }
 
-pub fn encode_tools_list_response(id: JsonRpcId) -> Result<WireMessage, DebugProtocolError> {
-    #[allow(unused_mut)]
+/// The tool list, which is the one place a build's *capability* shows.
+///
+/// `include_diagnostics` is the server's `diagnostics` feature. The protocol
+/// types for diagnostics exist unconditionally, so a build that cannot collect
+/// them has to say so here rather than by failing to define them. Advertising
+/// a tool that answers every call with an error would be worse than omitting
+/// it: a client would report the app as broken instead of as a plain build.
+pub fn encode_tools_list_response(
+    id: JsonRpcId,
+    include_diagnostics: bool,
+) -> Result<WireMessage, DebugProtocolError> {
     let mut tools = vec![serde_json::json!({
         "name": AGENT_CONTROL_TOOL,
         "description": "Inspect and operate the native Blitz semantic UI tree",
         "inputSchema": {"type": "object"}
     })];
-    #[cfg(feature = "diagnostics")]
-    tools.push(serde_json::json!({
-        "name": DIAGNOSTICS_TOOL,
-        "description": "Observe Blitz DOM, layout, errors, and renderer metrics",
-        "inputSchema": {"type": "object"}
-    }));
+    if include_diagnostics {
+        tools.push(serde_json::json!({
+            "name": DIAGNOSTICS_TOOL,
+            "description": "Observe Blitz DOM, layout, errors, and renderer metrics",
+            "inputSchema": {"type": "object"}
+        }));
+    }
     encode_rpc(JsonRpcMessage::Response(JsonRpcResponse::result(
         Some(id),
         serde_json::json!({"tools": tools}),
@@ -575,7 +590,6 @@ pub fn decode_agent_request(
     decode_tool_request(message, AGENT_CONTROL_TOOL)
 }
 
-#[cfg(feature = "diagnostics")]
 pub fn encode_diagnostics_request(
     id: JsonRpcId,
     request: &DiagnosticsRequest,
@@ -583,7 +597,6 @@ pub fn encode_diagnostics_request(
     encode_tool_request(id, DIAGNOSTICS_TOOL, request)
 }
 
-#[cfg(feature = "diagnostics")]
 pub fn decode_diagnostics_request(
     message: WireMessage,
 ) -> Result<(JsonRpcId, DiagnosticsRequest), DebugProtocolError> {
@@ -620,11 +633,8 @@ fn response_summary(response: &DebugResponse) -> String {
         DebugResponse::AgentSnapshot(snapshot) => {
             format!("semantic snapshot with {} nodes", snapshot.nodes.len())
         }
-        #[cfg(feature = "diagnostics")]
         DebugResponse::Snapshot(_) => "diagnostic snapshot".into(),
-        #[cfg(feature = "diagnostics")]
         DebugResponse::Metrics(_) => "renderer metrics".into(),
-        #[cfg(feature = "diagnostics")]
         DebugResponse::Idle(_) => "renderer idle".into(),
         DebugResponse::Error(error) => error.message.clone(),
     }
@@ -656,12 +666,10 @@ pub fn decode_agent_event(message: WireMessage) -> Result<AgentControlEvent, Deb
     decode_notification(message, AGENT_EVENT_NOTIFICATION)
 }
 
-#[cfg(feature = "diagnostics")]
 pub fn encode_diagnostics_event(event: &DebugEvent) -> Result<WireMessage, DebugProtocolError> {
     encode_notification(DIAGNOSTICS_EVENT_NOTIFICATION, event)
 }
 
-#[cfg(feature = "diagnostics")]
 pub fn decode_diagnostics_event(message: WireMessage) -> Result<DebugEvent, DebugProtocolError> {
     decode_notification(message, DIAGNOSTICS_EVENT_NOTIFICATION)
 }
@@ -720,7 +728,6 @@ fn decode_incoming_tool_call(
             id,
             request: serde_json::from_value(params.arguments)?,
         }),
-        #[cfg(feature = "diagnostics")]
         DIAGNOSTICS_TOOL => Ok(IncomingRequest::Diagnostics {
             id,
             request: serde_json::from_value(params.arguments)?,
@@ -764,7 +771,7 @@ fn decode_notification<T: DeserializeOwned>(
     .map_err(Into::into)
 }
 
-pub(crate) fn encode_rpc(message: JsonRpcMessage) -> Result<WireMessage, DebugProtocolError> {
+pub fn encode_rpc(message: JsonRpcMessage) -> Result<WireMessage, DebugProtocolError> {
     Ok(WireMessage::Text(serde_json::to_string(&message)?))
 }
 
@@ -785,7 +792,7 @@ pub fn peek_request_id(message: &WireMessage) -> Option<JsonRpcId> {
     }
 }
 
-pub(crate) fn decode_rpc(message: WireMessage) -> Result<JsonRpcMessage, DebugProtocolError> {
+pub fn decode_rpc(message: WireMessage) -> Result<JsonRpcMessage, DebugProtocolError> {
     let WireMessage::Text(text) = message else {
         return Err(DebugProtocolError::NonTextFrame);
     };
@@ -867,7 +874,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "diagnostics")]
     #[test]
     fn diagnostics_metrics_request_and_response_round_trip() {
         let id = JsonRpcId::Number(23);
@@ -889,7 +895,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "diagnostics")]
     #[test]
     fn frame_metrics_round_trip_and_keep_unmeasured_fields_empty() {
         let id = JsonRpcId::Number(24);

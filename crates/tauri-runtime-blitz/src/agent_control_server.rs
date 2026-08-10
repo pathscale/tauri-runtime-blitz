@@ -147,7 +147,9 @@ async fn handle_connection(stream: UnixStream, bridge: ControlBridge) {
                         encode_initialize_response(id, env!("CARGO_PKG_VERSION"))
                     }
                     Ok(IncomingRequest::Initialized) => continue,
-                    Ok(IncomingRequest::ToolsList { id }) => encode_tools_list_response(id),
+                    Ok(IncomingRequest::ToolsList { id }) => {
+                        encode_tools_list_response(id, cfg!(feature = "diagnostics"))
+                    }
                     Ok(IncomingRequest::Agent { id, request }) => {
                         let response = bridge(ControlBridgeRequest::Agent(request))
                             .await
@@ -159,9 +161,16 @@ async fn handle_connection(stream: UnixStream, bridge: ControlBridge) {
                             });
                         encode_response(id, &response)
                     }
-                    #[cfg(feature = "diagnostics")]
-                    Ok(IncomingRequest::Diagnostics { id, request }) => {
-                        let response = bridge(ControlBridgeRequest::Diagnostics(request))
+                    // The protocol defines diagnostics unconditionally; only
+                    // collection is feature-gated. A build without it answers
+                    // the caller instead of failing to compile the arm, which
+                    // is the whole reason the types are not gated.
+                    Ok(IncomingRequest::Diagnostics {
+                        id,
+                        request: _request,
+                    }) => {
+                        #[cfg(feature = "diagnostics")]
+                        let response = bridge(ControlBridgeRequest::Diagnostics(_request))
                             .await
                             .unwrap_or_else(|_| {
                                 DebugResponse::Error(crate::control_protocol::DebugError {
@@ -169,6 +178,13 @@ async fn handle_connection(stream: UnixStream, bridge: ControlBridge) {
                                     message: "the UI-thread diagnostics bridge closed".into(),
                                 })
                             });
+                        #[cfg(not(feature = "diagnostics"))]
+                        let response = DebugResponse::Error(crate::control_protocol::DebugError {
+                            code: "diagnosticsUnavailable".into(),
+                            message: "this build has no diagnostics feature; \
+                                      rebuild with tauri-runtime-blitz/diagnostics"
+                                .into(),
+                        });
                         encode_response(id, &response)
                     }
                     Err(error) => encode_rpc_error(
