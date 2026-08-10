@@ -198,6 +198,9 @@ pub enum WheelPhase {
 #[serde(rename_all = "camelCase")]
 pub struct RevisionSet {
     pub document: u64,
+    /// Blitz does not version style, layout and paint separately from the
+    /// document, so these stay zero. Filling them with a copy of `document` would
+    /// suggest a per-stage change signal the runtime cannot actually provide.
     pub style: u64,
     pub layout: u64,
     pub paint: u64,
@@ -243,22 +246,159 @@ pub struct SemanticNode {
 #[serde(rename_all = "camelCase")]
 pub struct RendererMetrics {
     pub revisions: RevisionSet,
-    pub queue_depth: u64,
+    /// Depth of a pending-work queue in front of the renderer.
+    ///
+    /// Blitz has no such queue: `View::redraw` resolves, paints and presents
+    /// inline on the event-loop thread. The one queue that exists, `ScriptQueue`,
+    /// lives inside the Tauri webview dispatcher and is not reachable from the
+    /// runtime, so this stays `None` rather than reporting a constant zero that
+    /// reads like a measured "nothing is backed up".
+    pub queue_depth: Option<u64>,
     pub invalidations_coalesced: u64,
+    /// The most recently presented frame, as measured by blitz-shell.
+    ///
+    /// `None` until the window has drawn at least once.
     pub frame: Option<FrameMetrics>,
+    /// Mean, p95 and worst case across the last few hundred presented frames.
+    pub frame_window: Option<FrameWindowMetrics>,
+    /// Cost of collecting this diagnostic snapshot. This measures the observer,
+    /// not the application, and is reported separately so the two are never
+    /// confused again.
+    pub snapshot: Option<SnapshotCost>,
+    /// What JavaScript cost, per `ScriptDocument::poll`.
+    ///
+    /// The frame numbers above cover resolve, paint and present, which is the
+    /// engine. Reactivity, event handlers, timers and microtasks are none of
+    /// those, so an application could present a 4ms frame and still feel slow
+    /// with nothing here to explain it. `None` until script has actually run.
+    pub script: Option<ScriptMetrics>,
     pub resident_bytes: Option<u64>,
 }
 
+/// Script execution cost, in milliseconds, over the retained poll window.
+#[cfg(feature = "diagnostics")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptMetrics {
+    pub mean_ms: f64,
+    pub p95_ms: f64,
+    pub max_ms: f64,
+    /// Polls that ran script, within the retained window.
+    pub window_polls: u64,
+    /// Every poll since launch, including the ones that found nothing to do.
+    pub total_polls: u64,
+    /// Polls that ran script since launch.
+    pub productive_polls: u64,
+    /// Total time spent in the script runtime since launch.
+    pub spent_ms: f64,
+    /// Where that time went, worst total first: event name or timer source,
+    /// call count, total milliseconds, worst single call.
+    pub breakdown: Vec<ScriptSource>,
+}
+
+/// One attributed source of script time.
+#[cfg(feature = "diagnostics")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptSource {
+    pub label: String,
+    pub calls: u64,
+    pub total_ms: f64,
+    pub worst_ms: f64,
+}
+
+/// Timings of one real presented frame, in milliseconds.
+///
+/// Every `Option` here is a value blitz does not measure. They are left empty on
+/// purpose: a plausible-looking zero is worse than an admitted gap, because it
+/// makes a missing measurement look like a fast one.
 #[cfg(feature = "diagnostics")]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameMetrics {
-    pub input_to_present_ms: f64,
-    pub style_ms: f64,
-    pub layout_ms: f64,
+    /// Wall time from the input event that caused the frame to the frame reaching
+    /// the screen. Blitz does not stamp input events with an arrival time and the
+    /// renderer reports no present timestamp, so there are no two clocks to
+    /// subtract.
+    pub input_to_present_ms: Option<f64>,
+    /// Style recalculation alone. Blitz runs style and layout inside a single
+    /// `resolve` pass and times only the pass, so the combined cost is in
+    /// `resolve_ms` instead.
+    pub style_ms: Option<f64>,
+    /// Layout alone. See `style_ms`.
+    pub layout_ms: Option<f64>,
+    /// Style plus layout, i.e. the `resolve` pass.
+    pub resolve_ms: f64,
+    /// Scene building: the `paint_scene` call that turns the resolved document
+    /// into renderer commands.
     pub scene_ms: f64,
-    pub submit_ms: f64,
-    pub present_ms: f64,
+    /// GPU submit alone. The renderer reports encode, submit and present as one
+    /// figure, which is in `renderer_ms`.
+    pub submit_ms: Option<f64>,
+    /// Present alone. See `submit_ms`.
+    pub present_ms: Option<f64>,
+    /// Everything the renderer did outside scene building: encode, submit and
+    /// present.
+    pub renderer_ms: f64,
+    /// `resolve_ms + scene_ms + renderer_ms`. CPU time inside `redraw`, not
+    /// input-to-photon latency.
+    pub total_ms: f64,
+    /// How long ago the frame started, measured when this response was built. A
+    /// large value means the app has been idle and these numbers are stale.
+    pub age_ms: f64,
+}
+
+/// Mean, 95th percentile and worst case for one timing series, in milliseconds.
+///
+/// The percentile and maximum matter more than the mean: a one-second average
+/// hides the single slow frame that is the only one a user notices.
+#[cfg(feature = "diagnostics")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimingStats {
+    pub mean_ms: f64,
+    pub p95_ms: f64,
+    pub max_ms: f64,
+}
+
+/// Aggregate statistics over the recently presented frames.
+#[cfg(feature = "diagnostics")]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameWindowMetrics {
+    /// Frames presented since process start.
+    pub frames_total: u64,
+    /// Frames the statistics below were computed over.
+    pub window_frames: u64,
+    /// Style plus layout.
+    pub resolve: TimingStats,
+    /// Scene building.
+    pub scene: TimingStats,
+    /// Encode, submit and present.
+    pub renderer: TimingStats,
+    /// Per-frame `resolve + scene + renderer`.
+    pub total: TimingStats,
+    /// Gap between the starts of consecutive frames, idle gaps excluded.
+    pub interval: TimingStats,
+    /// Frames per second across active intervals only. Blitz idles at zero FPS by
+    /// design, so counting idle time would make every measurement meaningless.
+    pub active_fps: f64,
+    /// Active intervals longer than 1.5 display refresh periods. Always zero when
+    /// `display_refresh_hz` is unknown.
+    pub missed_refreshes: u64,
+    pub display_refresh_hz: Option<f64>,
+}
+
+/// What it cost to answer this diagnostics request.
+#[cfg(feature = "diagnostics")]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotCost {
+    /// Time spent draining the script event loop before reading the document.
+    pub poll_ms: f64,
+    /// Time spent forcing a `resolve` so the reported layout is up to date.
+    pub resolve_ms: f64,
+    /// Total time spent building the response.
     pub total_ms: f64,
 }
 
@@ -730,5 +870,58 @@ mod tests {
             decode_response(encode_response(id.clone(), &response).unwrap()).unwrap(),
             (id, response)
         );
+    }
+
+    #[cfg(feature = "diagnostics")]
+    #[test]
+    fn frame_metrics_round_trip_and_keep_unmeasured_fields_empty() {
+        let id = JsonRpcId::Number(24);
+        let response = DebugResponse::Metrics(RendererMetrics {
+            frame: Some(FrameMetrics {
+                resolve_ms: 1.5,
+                scene_ms: 2.25,
+                renderer_ms: 3.0,
+                total_ms: 6.75,
+                age_ms: 12.0,
+                ..Default::default()
+            }),
+            frame_window: Some(FrameWindowMetrics {
+                frames_total: 900,
+                window_frames: 256,
+                total: TimingStats {
+                    mean_ms: 6.0,
+                    p95_ms: 11.0,
+                    max_ms: 40.0,
+                },
+                active_fps: 59.4,
+                missed_refreshes: 2,
+                display_refresh_hz: Some(60.0),
+                ..Default::default()
+            }),
+            snapshot: Some(SnapshotCost {
+                poll_ms: 0.5,
+                resolve_ms: 1.0,
+                total_ms: 4.0,
+            }),
+            ..Default::default()
+        });
+
+        let (decoded_id, decoded) =
+            decode_response(encode_response(id.clone(), &response).unwrap()).unwrap();
+        assert_eq!(decoded_id, id);
+        assert_eq!(decoded, response);
+
+        let DebugResponse::Metrics(metrics) = decoded else {
+            panic!("expected renderer metrics")
+        };
+        let frame = metrics.frame.unwrap();
+        // Fields blitz does not measure must stay empty on the wire. Sending 0.0
+        // is the defect this guards: a zero reads as "measured, and fast".
+        assert_eq!(frame.input_to_present_ms, None);
+        assert_eq!(frame.style_ms, None);
+        assert_eq!(frame.layout_ms, None);
+        assert_eq!(frame.submit_ms, None);
+        assert_eq!(frame.present_ms, None);
+        assert_eq!(metrics.queue_depth, None);
     }
 }
