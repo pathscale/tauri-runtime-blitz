@@ -15,9 +15,11 @@ mod ipc;
 pub use ipc::attach_ipc_handler;
 #[cfg(all(feature = "agent-control", unix))]
 mod agent_control_server;
+/// The wire protocol, which lives in its own crate so clients can speak it
+/// without building a renderer. Re-exported under the name this crate has
+/// always used it by, so `control_protocol::` paths keep resolving.
 #[cfg(feature = "agent-control")]
-#[path = "debug_protocol.rs"]
-pub mod control_protocol;
+pub use blitz_control_protocol as control_protocol;
 mod script_queue;
 pub use script_queue::ScriptQueue;
 mod runtime;
