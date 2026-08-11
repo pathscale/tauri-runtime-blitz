@@ -504,11 +504,11 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 }
                 document.inner_mut().resolve(0.0);
                 let inner = document.inner();
-                let root = root.and_then(|id| usize::try_from(id).ok());
+                let root = root.map(blitz_dom::NodeId::from_u64);
                 if root.is_some_and(|id| inner.get_node(id).is_none()) {
                     return control_error("unknownNode", "the requested root node does not exist");
                 }
-                let focused_node = inner.get_focussed_node_id().map(|id| id as u64);
+                let focused_node = inner.get_focussed_node_id().map(|id| id.as_u64());
                 let nodes = inner
                     .tree()
                     .iter()
@@ -523,9 +523,9 @@ impl<T: UserEvent> RuntimeApplication<T> {
                         let role = semantic_role(element);
                         let name = semantic_name(element, node, &role);
                         let value = semantic_value(element);
-                        let parent = semantic_parent(&inner, id, root).map(|id| id as u64);
+                        let parent = semantic_parent(&inner, id, root).map(|id| id.as_u64());
                         Some(SemanticNode {
-                            id: id as u64,
+                            id: id.as_u64(),
                             parent,
                             role,
                             name,
@@ -644,7 +644,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
         document.inner_mut().resolve(0.0);
         let snapshot_resolve_ms = resolve_started.elapsed().as_secs_f64() * 1_000.0;
         let inner = document.inner();
-        let active_element = inner.get_focussed_node_id().map(|id| id as u64);
+        let active_element = inner.get_focussed_node_id().map(|id| id.as_u64());
         let nodes: Vec<SemanticNode> = inner
             .tree()
             .iter()
@@ -657,8 +657,8 @@ impl<T: UserEvent> RuntimeApplication<T> {
                         .is_some_and(|rect| rect.width > 0.0 && rect.height > 0.0);
                 let role = semantic_role(element);
                 Some(SemanticNode {
-                    id: id as u64,
-                    parent: semantic_parent(&inner, id, None).map(|id| id as u64),
+                    id: id.as_u64(),
+                    parent: semantic_parent(&inner, id, None).map(|id| id.as_u64()),
                     name: semantic_name(element, node, &role),
                     role,
                     value: semantic_value(element),
@@ -784,8 +784,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
     fn perform_agent_action(&mut self, action: AgentAction) -> Result<(), DebugError> {
         match action {
             AgentAction::Click { node_id } => {
-                let node_id = usize::try_from(node_id)
-                    .map_err(|_| debug_error("unknownNode", "node id is out of range"))?;
+                let node_id = blitz_dom::NodeId::from_u64(node_id);
                 let (x, y) = {
                     let document = self
                         .agent_document()
@@ -827,8 +826,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 )));
             }
             AgentAction::SetValue { node_id, value } => {
-                let node_id = usize::try_from(node_id)
-                    .map_err(|_| debug_error("unknownNode", "node id is out of range"))?;
+                let node_id = blitz_dom::NodeId::from_u64(node_id);
                 let document = self
                     .agent_document()
                     .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
@@ -861,8 +859,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 document.handle_ui_event(UiEvent::Ime(BlitzImeEvent::Commit(value)));
             }
             AgentAction::ScrollIntoView { node_id } => {
-                let node_id = usize::try_from(node_id)
-                    .map_err(|_| debug_error("unknownNode", "node id is out of range"))?;
+                let node_id = blitz_dom::NodeId::from_u64(node_id);
                 let document = self
                     .agent_document()
                     .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
@@ -1392,8 +1389,8 @@ fn semantic_value(element: &blitz_dom::ElementData) -> Option<String> {
 #[cfg(all(feature = "agent-control", unix))]
 fn semantic_depth(
     document: &blitz_dom::BaseDocument,
-    node_id: usize,
-    root: Option<usize>,
+    node_id: blitz_dom::NodeId,
+    root: Option<blitz_dom::NodeId>,
     max_depth: u32,
 ) -> Option<u32> {
     let mut current = Some(node_id);
@@ -1422,9 +1419,9 @@ fn semantic_depth(
 #[cfg(all(feature = "agent-control", unix))]
 fn semantic_parent(
     document: &blitz_dom::BaseDocument,
-    node_id: usize,
-    root: Option<usize>,
-) -> Option<usize> {
+    node_id: blitz_dom::NodeId,
+    root: Option<blitz_dom::NodeId>,
+) -> Option<blitz_dom::NodeId> {
     if Some(node_id) == root {
         return None;
     }
@@ -1440,7 +1437,7 @@ fn semantic_parent(
 }
 
 #[cfg(all(feature = "agent-control", unix))]
-fn node_is_visible(document: &blitz_dom::BaseDocument, node_id: usize) -> bool {
+fn node_is_visible(document: &blitz_dom::BaseDocument, node_id: blitz_dom::NodeId) -> bool {
     let mut current = Some(node_id);
     while let Some(id) = current {
         let Some(node) = document.get_node(id) else {
