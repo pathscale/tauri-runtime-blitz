@@ -193,8 +193,22 @@ async fn handle_connection(stream: UnixStream, bridge: ControlBridge) {
                     ),
                 }
             }
+            // A transport error is not a bad request: the framing is broken or
+            // the peer is gone, and the next read returns the same error
+            // immediately. Answering and continuing spun this task at a full
+            // core for the life of the process, one per client that ever
+            // disconnected, which is most of them. Measured on an idle app:
+            // 0.0% CPU without the control server, 55-76% with it after a few
+            // tools had connected and gone.
+            //
+            // So answer once, best effort, then stop reading this connection.
             Err(error) => {
-                encode_rpc_error(None, JsonRpcError::new(INVALID_REQUEST, error.to_string()))
+                let farewell =
+                    encode_rpc_error(None, JsonRpcError::new(INVALID_REQUEST, error.to_string()));
+                if let Ok(farewell) = farewell {
+                    let _ = stream.send(farewell).await;
+                }
+                break;
             }
         };
         let response = response.unwrap_or_else(|error| {
