@@ -149,6 +149,18 @@ pub enum AgentAction {
     Click { node_id: u64 },
     SetValue { node_id: u64, value: String },
     ScrollIntoView { node_id: u64 },
+    /// Scroll a specific node's nearest scroll container by a delta.
+    ///
+    /// Wheel events carry no coordinates and are delivered to whatever the
+    /// document last saw hovered, which an injected pointer move does not
+    /// reliably set. That made every scrollable panel in the application
+    /// undrivable from outside, so a bug that only appears further down a long
+    /// page could not be reproduced without a human at the keyboard.
+    ScrollBy {
+        node_id: u64,
+        delta_x: f64,
+        delta_y: f64,
+    },
     Input(InputCommand),
 }
 

@@ -868,6 +868,22 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 }
                 document.inner_mut().scroll_to_node(node_id);
             }
+            AgentAction::ScrollBy {
+                node_id,
+                delta_x,
+                delta_y,
+            } => {
+                let node_id = blitz_dom::NodeId::from_u64(node_id);
+                let document = self
+                    .agent_document()
+                    .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
+                if document.inner().get_node(node_id).is_none() {
+                    return Err(debug_error("unknownNode", "node does not exist"));
+                }
+                document
+                    .inner_mut()
+                    .scroll_nearest_container_by(node_id, delta_x, delta_y);
+            }
             AgentAction::Input(input) => self.perform_agent_input(input)?,
         }
         Ok(())
@@ -939,6 +955,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 ..
             } => {
                 let coords = pointer_coords(self.agent_pointer);
+                let hover_at = self.agent_pointer;
                 let event = BlitzWheelEvent {
                     delta: BlitzWheelDelta::Pixels(delta_x, delta_y),
                     coords,
@@ -949,6 +966,12 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 let document = self
                     .agent_document()
                     .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
+                // A wheel event targets the hovered node, and hover is resolved
+                // by the shell from real cursor movement. An injected pointer
+                // move never touches it, so an injected wheel had no target and
+                // scrolled nothing: driving a panel from outside the app looked
+                // like the panel refusing to scroll, and cost most of a session.
+                document.inner_mut().set_hover_to(hover_at.0, hover_at.1);
                 document.handle_ui_event(UiEvent::Wheel(event));
             }
         }
