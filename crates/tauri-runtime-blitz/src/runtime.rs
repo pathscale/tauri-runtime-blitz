@@ -61,6 +61,8 @@ use blitz_traits::events::{
     BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, Point, PointerCoords,
     PointerDetails, UiEvent,
 };
+#[cfg(all(feature = "diagnostics", unix))]
+use blitz_traits::node_id::NodeId;
 #[cfg(all(feature = "agent-control", unix))]
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
 
@@ -80,6 +82,37 @@ static AGENT_CONTROL_RUNTIME: OnceLock<Mutex<Option<Weak<Mutex<AgentControlRunti
     OnceLock::new();
 #[cfg(all(feature = "diagnostics", unix))]
 static DIAGNOSTICS_HANDLER: OnceLock<RwLock<Option<Arc<DiagnosticsHandler>>>> = OnceLock::new();
+
+#[cfg(all(feature = "diagnostics", unix))]
+fn diagnostic_layout_row(
+    document: &blitz_dom::BaseDocument,
+    node: &SemanticNode,
+) -> Option<serde_json::Value> {
+    let bounds = node.bounds?;
+    let dom_node = document.get_node(NodeId::from_u64(node.id))?;
+    let layout = dom_node.final_layout();
+    let unzoom = |value: f32| match dom_node.primary_styles() {
+        Some(styles) => styles.effective_zoom.unzoom(value),
+        None => value,
+    };
+    Some(serde_json::json!({
+        "nodeId": node.id,
+        "bounds": bounds,
+        "scrollOffset": [dom_node.scroll_offset().x, dom_node.scroll_offset().y],
+        "clientSize": [
+            unzoom(layout.size.width),
+            unzoom(layout.size.height)
+        ],
+        "scrollSize": [
+            unzoom(layout.size.width + layout.scroll_width()),
+            unzoom(layout.size.height + layout.scroll_height())
+        ],
+        "scrollRange": [
+            layout.scroll_width(),
+            layout.scroll_height()
+        ]
+    }))
+}
 
 thread_local! {
     static CURRENT_BLITZ_APPLICATION: std::cell::Cell<*const ()> = const {
@@ -656,12 +689,26 @@ impl<T: UserEvent> RuntimeApplication<T> {
                         .as_ref()
                         .is_some_and(|rect| rect.width > 0.0 && rect.height > 0.0);
                 let role = semantic_role(element);
+                let value = if role == "generic" {
+                    Some(
+                        element
+                            .attrs()
+                            .iter()
+                            .map(|attribute| {
+                                format!("{}={}", attribute.name.local, attribute.value)
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    )
+                } else {
+                    semantic_value(element)
+                };
                 Some(SemanticNode {
                     id: id.as_u64(),
                     parent: semantic_parent(&inner, id, None).map(|id| id.as_u64()),
                     name: semantic_name(element, node, &role),
                     role,
-                    value: semantic_value(element),
+                    value,
                     enabled: element_attr(element, "disabled").is_none()
                         && element_attr(element, "aria-disabled") != Some("true"),
                     visible,
@@ -763,10 +810,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
             serde_json::Value::Array(
                 nodes
                     .iter()
-                    .filter_map(|node| {
-                        node.bounds
-                            .map(|bounds| serde_json::json!({"nodeId": node.id, "bounds": bounds}))
-                    })
+                    .filter_map(|node| diagnostic_layout_row(&inner, node))
                     .collect(),
             )
         });
@@ -1834,6 +1878,54 @@ mod tests {
         let shown_element = shown_node.element_data().unwrap();
         assert_eq!(semantic_role(shown_element), "button");
         assert_eq!(semantic_name(shown_element, shown_node, "button"), "Run");
+    }
+
+    #[cfg(all(feature = "diagnostics", unix))]
+    #[test]
+    fn diagnostic_layout_reports_scroll_state_without_script_evaluation() {
+        let mut document = ScriptDocument::from_html(
+            "<section id='conversation' style='height:100px;overflow-y:auto'><div style='height:400px'>tail</div></section>",
+            DocumentConfig::default(),
+        );
+        document.inner_mut().resolve(0.0);
+        let conversation = document
+            .inner()
+            .tree()
+            .iter()
+            .find_map(|(id, node)| {
+                node.element_data()
+                    .is_some_and(|element| element_attr(element, "id") == Some("conversation"))
+                    .then_some(id)
+            })
+            .unwrap();
+        document
+            .inner_mut()
+            .get_node_mut(conversation)
+            .unwrap()
+            .scroll_offset_mut()
+            .y = 60.0;
+
+        let inner = document.inner();
+        let row = diagnostic_layout_row(
+            &inner,
+            &SemanticNode {
+                id: conversation.as_u64(),
+                parent: None,
+                role: "generic".into(),
+                name: "Conversation".into(),
+                value: None,
+                enabled: true,
+                visible: true,
+                selected: false,
+                bounds: Some([0.0, 0.0, 100.0, 100.0]),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(row["scrollOffset"][1], 60.0);
+        assert_eq!(row["clientSize"][1], 100.0);
+        assert!(row["scrollSize"][1].as_f64().unwrap() >= 100.0);
+        assert!(row["scrollRange"][1].as_f64().unwrap() >= 0.0);
     }
 
     #[cfg(all(feature = "agent-control", unix))]
