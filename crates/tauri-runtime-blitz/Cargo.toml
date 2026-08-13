@@ -9,11 +9,11 @@ publish.workspace = true
 [dependencies]
 anyrender_vello = { package = "ps-anyrender-vello", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
 anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea", optional = true }
-blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", rev = "c4a8f3317cc176d820621321b1f4bd58a5cf1845", optional = true }
-blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", rev = "c4a8f3317cc176d820621321b1f4bd58a5cf1845", features = ["system-fonts"] }
+blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", rev = "064ba1e0d809ac09405739c2bd68563b942c3725", optional = true }
+blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", rev = "064ba1e0d809ac09405739c2bd68563b942c3725", features = ["system-fonts"] }
 blitz-control-protocol = { path = "../blitz-control-protocol", optional = true }
-blitz-shell = { package = "ps-blitz-shell", git = "https://github.com/pathscale/ps-blitz.git", rev = "c4a8f3317cc176d820621321b1f4bd58a5cf1845", default-features = false, features = ["clipboard", "svg"] }
-blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", rev = "c4a8f3317cc176d820621321b1f4bd58a5cf1845", optional = true }
+blitz-shell = { package = "ps-blitz-shell", git = "https://github.com/pathscale/ps-blitz.git", rev = "064ba1e0d809ac09405739c2bd68563b942c3725", default-features = false, features = ["clipboard", "svg"] }
+blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", rev = "064ba1e0d809ac09405739c2bd68563b942c3725", optional = true }
 http = "1"
 endpoint-libs = { version = "2.1.5", default-features = false, features = ["agent-control"], optional = true }
 keyboard-types = { version = "0.7", optional = true }
