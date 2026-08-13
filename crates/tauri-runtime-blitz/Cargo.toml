@@ -12,6 +12,9 @@ anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", git = "https:/
 blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", rev = "5445fad77018849a8412a710458ca099072fae2e", optional = true }
 blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", rev = "5445fad77018849a8412a710458ca099072fae2e", features = ["system-fonts"] }
 blitz-control-protocol = { path = "../blitz-control-protocol", optional = true }
+anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
+peniko = "0.6"
+
 blitz-shell = { package = "ps-blitz-shell", git = "https://github.com/pathscale/ps-blitz.git", rev = "5445fad77018849a8412a710458ca099072fae2e", default-features = false, features = ["clipboard", "svg"] }
 blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", rev = "5445fad77018849a8412a710458ca099072fae2e", optional = true }
 http = "1"
@@ -29,7 +32,7 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync"], 
 
 [features]
 default = ["agent-control"]
-agent-control = ["dep:blitz-control-protocol", "dep:blitz-dom", "dep:blitz-traits", "dep:endpoint-libs", "dep:keyboard-types", "dep:serde", "dep:serde_json", "dep:tokio"]
+agent-control = ["blitz-shell/debug-control", "dep:blitz-control-protocol", "dep:blitz-dom", "dep:blitz-traits", "dep:endpoint-libs", "dep:keyboard-types", "dep:serde", "dep:serde_json", "dep:tokio"]
 debug-control = ["blitz-script/debug-control", "blitz-shell/debug-control"]
 diagnostics = ["agent-control", "debug-control"]
 # Swap the general-purpose Vello renderer for the lighter hybrid pipeline.
@@ -42,3 +45,6 @@ macos-private-api = []
 
 [dev-dependencies]
 tauri = { version = "=2.11.5", default-features = false, features = ["test"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+window-vibrancy = "0.8.0"
