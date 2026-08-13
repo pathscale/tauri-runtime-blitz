@@ -75,7 +75,7 @@ impl ScriptQueue {
     /// Attach this queue to the document's native poll cycle.
     pub fn attach_to(&self, document: &mut ScriptDocument) {
         let queue = self.clone();
-        document.set_poll_hook(move |document, task_context| queue.poll(document, task_context));
+        document.add_poll_hook(move |document, task_context| queue.poll(document, task_context));
     }
 
     fn poll(&self, document: &mut ScriptDocument, task_context: Option<&TaskContext<'_>>) -> bool {
@@ -202,5 +202,24 @@ mod tests {
         let inner = document.inner();
         let result = inner.query_selector("#result").unwrap().unwrap();
         assert_eq!(inner.get_node(result).unwrap().text_content(), "drained");
+    }
+
+    #[test]
+    fn attaching_queue_preserves_existing_document_poll_hook() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let mut document = ScriptDocument::from_html(
+            "<div id=\"result\">waiting</div>",
+            DocumentConfig::default(),
+        );
+        document.set_poll_hook(move |_, _| {
+            observed.fetch_add(1, Ordering::Relaxed);
+            true
+        });
+
+        ScriptQueue::default().attach_to(&mut document);
+
+        assert!(document.poll(None));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 }
