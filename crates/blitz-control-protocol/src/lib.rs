@@ -146,9 +146,16 @@ pub struct SnapshotRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", content = "params", rename_all = "camelCase")]
 pub enum AgentAction {
-    Click { node_id: u64 },
-    SetValue { node_id: u64, value: String },
-    ScrollIntoView { node_id: u64 },
+    Click {
+        node_id: u64,
+    },
+    SetValue {
+        node_id: u64,
+        value: String,
+    },
+    ScrollIntoView {
+        node_id: u64,
+    },
     /// Scroll a specific node's nearest scroll container by a delta.
     ///
     /// Wheel events carry no coordinates and are delivered to whatever the
