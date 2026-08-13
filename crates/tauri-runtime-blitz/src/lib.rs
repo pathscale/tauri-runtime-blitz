@@ -31,6 +31,9 @@ pub use runtime::{
     BlitzEventLoopProxy, BlitzRuntime, BlitzRuntimeHandle, builder, set_document_factory,
     set_runtime_trace,
 };
+/// Restyle the window's glass from values the stylesheet owns.
+#[cfg(target_os = "macos")]
+pub use runtime::set_window_glass;
 #[cfg(all(feature = "agent-control", unix))]
 pub use runtime::{
     agent_control_enabled, apply_runtime_debug_options, set_agent_control_enabled,

@@ -221,11 +221,7 @@ pub fn apply_runtime_debug_options(
 /// activation boundary rather than including unrelated background history.
 #[cfg(feature = "agent-control")]
 pub fn set_deep_profiling_enabled(enabled: bool) {
-    blitz_traits::profiling::set_deep_profiling_enabled(enabled);
-    if !enabled {
-        blitz_shell::clear_frame_stats();
-        blitz_script::script_stats::clear();
-    }
+    blitz_shell::set_deep_profiling_enabled(enabled);
 }
 
 #[cfg(feature = "agent-control")]
@@ -1729,9 +1725,41 @@ fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
 
     let attributes = window_attributes(&builder);
     let state_for_creation = Arc::clone(&state);
+    // A transparent window needs the surface to composite that way and the
+    // frame to be cleared to nothing. The renderer's default clear colour is
+    // opaque white, so leaving it alone would hand the compositor a filled
+    // frame and the glass behind it would never be visible — the same black
+    // window that a missing `with_transparent` produces, from a different
+    // cause.
+    #[cfg(not(feature = "hybrid-renderer"))]
+    let renderer = if builder.config.transparent {
+        VelloWindowRenderer::with_options(
+            anyrender_vello::VelloRendererOptions::default()
+                .composite_alpha_mode(anyrender::CompositeAlphaMode::Transparent)
+                .base_color(peniko::Color::TRANSPARENT),
+        )
+    } else {
+        VelloWindowRenderer::new()
+    };
+    // The hybrid pipeline, same decision through its own options type.
+    //
+    // It is the renderer that can carry CSS filters: `anyrender_vello_hybrid`
+    // forwards them to `vello_hybrid`, which renders a filtered layer into an
+    // intermediate texture and applies the filter there. Classic vello has no
+    // filter parameter at all, so a build that wants `filter:` wants this one.
+    #[cfg(feature = "hybrid-renderer")]
+    let renderer = if builder.config.transparent {
+        VelloWindowRenderer::with_options(
+            anyrender_vello_hybrid::VelloHybridRendererOptions::default()
+                .composite_alpha_mode(anyrender::CompositeAlphaMode::Transparent)
+                .base_color(peniko::Color::TRANSPARENT),
+        )
+    } else {
+        VelloWindowRenderer::new()
+    };
     let window = BlitzShellWindowConfig::with_attributes(
         Box::new(prepared.document),
-        VelloWindowRenderer::new(),
+        renderer,
         attributes,
     )
     .with_on_created(move |native| {
@@ -1746,6 +1774,22 @@ fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
          */
         let visible = state_for_creation.config.lock().unwrap().visible;
         native.set_visible(visible);
+        // Glass rides on the same flag as transparency, because it is the same
+        // decision: an opaque window has nothing behind it to show. Applied
+        // here rather than from the attributes, because the effect view is
+        // attached to a native window that does not exist until now.
+        #[cfg(target_os = "macos")]
+        {
+            // Kept regardless of the transparent flag: the stylesheet may ask
+            // for glass later, and by then this callback is long gone.
+            let slot = GLASS_WINDOW.get_or_init(|| Mutex::new(None));
+            if let Ok(mut guard) = slot.lock() {
+                *guard = Some(Arc::clone(&native));
+            }
+            if state_for_creation.config.lock().unwrap().transparent {
+                apply_window_glass(native.as_ref());
+            }
+        }
         *state_for_creation.native.lock().unwrap() = Some(native);
         if let Some(callback) = after_window_creation {
             let marker = PhantomData;
@@ -1770,6 +1814,101 @@ fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
     })
 }
 
+/// Put a Liquid Glass backdrop behind the window's contents.
+///
+/// macOS 26 has `NSGlassEffectView`; everything older gets the vibrancy view it
+/// grew out of, which is why the fallback is a version error and not a failure.
+/// Neither is fatal: a window without a backdrop is a plain window, and refusing
+/// to finish creating it over a missing effect would cost the whole app.
+///
+/// Cost note, since this sits next to the render path: the calls here happen
+/// once, and `objc2` bindings lower to a direct `objc_msgSend`, so the binding
+/// layers are free. What is not free is the effect itself — the compositor
+/// samples and blurs what is behind the window every frame it is visible, and a
+/// non-opaque window gives up the opaque fast path. Measure that with
+/// `BLITZ_PHASE_TIMES`, not by reasoning about the Rust.
+/// The native window, kept so its chrome can be restyled after creation.
+///
+/// The theme lives in CSS and changes while the app runs, but the glass view is
+/// an AppKit object created once. Without a handle there is nowhere to send a
+/// colour the stylesheet just changed.
+#[cfg(target_os = "macos")]
+static GLASS_WINDOW: std::sync::OnceLock<Mutex<Option<Arc<dyn winit::window::Window>>>> =
+    std::sync::OnceLock::new();
+
+/// Restyle the window's glass from values the stylesheet owns.
+///
+/// `tint` is straight sRGB with alpha, as read from a computed style; `radius`
+/// is in points. Both are the CSS side's to decide — this only carries them
+/// across to AppKit, so the chrome and the page cannot drift apart.
+#[cfg(target_os = "macos")]
+pub fn set_window_glass(tint: Option<(u8, u8, u8, u8)>, radius: Option<f64>, enabled: bool) {
+    use window_vibrancy::{LiquidGlassOptions, NSGlassEffectViewStyle, apply_liquid_glass,
+        clear_liquid_glass};
+
+    let Some(slot) = GLASS_WINDOW.get() else {
+        return;
+    };
+    let Ok(guard) = slot.lock() else {
+        return;
+    };
+    let Some(window) = guard.as_ref() else {
+        return;
+    };
+    let window = window.as_ref();
+
+    if !enabled {
+        let _ = clear_liquid_glass(window);
+        runtime_trace("window glass cleared");
+        return;
+    }
+
+    // Cleared first: applying over an existing view stacks a second one, and
+    // the tint of the pair is not the tint that was asked for.
+    let _ = clear_liquid_glass(window);
+
+    let mut options = LiquidGlassOptions::new(NSGlassEffectViewStyle::Regular);
+    if let Some(tint) = tint {
+        options = options.tint_color(tint);
+    }
+    if let Some(radius) = radius {
+        options = options.radius(radius);
+    }
+    match apply_liquid_glass(window, options) {
+        Ok(()) => runtime_trace("window glass restyled from the stylesheet"),
+        Err(error) => runtime_trace(&format!("could not restyle window glass: {error}")),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_window_glass(window: &dyn winit::window::Window) {
+    use window_vibrancy::{
+        LiquidGlassOptions, NSGlassEffectViewStyle, NSVisualEffectMaterial, apply_liquid_glass,
+        apply_vibrancy,
+    };
+
+    let options = LiquidGlassOptions::new(NSGlassEffectViewStyle::Regular);
+    match apply_liquid_glass(window, options) {
+        Ok(()) => runtime_trace("liquid glass applied"),
+        Err(window_vibrancy::Error::UnsupportedPlatformVersion(_)) => {
+            // Pre-26. `UnderWindowBackground` is the material meant for a whole
+            // window's backdrop rather than a panel inside one.
+            match apply_vibrancy(
+                window,
+                NSVisualEffectMaterial::UnderWindowBackground,
+                None,
+                None,
+            ) {
+                Ok(()) => runtime_trace("liquid glass unavailable; applied vibrancy instead"),
+                Err(error) => {
+                    runtime_trace(&format!("no window backdrop applied: {error}"));
+                }
+            }
+        }
+        Err(error) => runtime_trace(&format!("no window backdrop applied: {error}")),
+    }
+}
+
 fn window_attributes(builder: &BlitzWindowBuilder) -> WindowAttributes {
     let config = &builder.config;
     let mut attributes = WindowAttributes::default()
@@ -1780,6 +1919,12 @@ fn window_attributes(builder: &BlitzWindowBuilder) -> WindowAttributes {
         .with_visible(config.visible)
         .with_decorations(config.decorations)
         .with_content_protected(config.content_protected)
+        // Was accepted by the builder, stored on the config, and never read, so
+        // `"transparent": true` was a silent no-op and nothing behind the window
+        // could ever show through. It is the first of the three things a glass
+        // window needs; the other two are a non-opaque composite mode and a root
+        // that does not paint over everything.
+        .with_transparent(config.transparent)
         .with_active(config.focus);
 
     if let (Some(x), Some(y)) = (config.x, config.y) {
