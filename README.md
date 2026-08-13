@@ -40,4 +40,5 @@ visible real-command IPC probe. Standalone child-webview creation remains unsupp
 | `docs/04-risks.md` | What makes this fail, and the honest cost |
 | `docs/05-implementation.md` | Concrete commands and assertions for the first gates |
 | `docs/06-debug-control.md` | Reliable WebDriver-compatible control and diagnostics channel |
+| `docs/08-runtime-debug-settings.md` | Shared two-setting runtime gate for AgencyZero, Chuzz, and other embedders |
 | `docs/07-css-conformance.md` | Chromium/Blitz screenshot diffs and bounded visual gaps |

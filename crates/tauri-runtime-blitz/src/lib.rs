@@ -23,6 +23,8 @@ pub use blitz_control_protocol as control_protocol;
 mod script_queue;
 pub use script_queue::ScriptQueue;
 mod runtime;
+#[cfg(feature = "agent-control")]
+pub use blitz_traits::profiling::DebugOptions as RuntimeDebugOptions;
 #[cfg(all(feature = "diagnostics", unix))]
 pub use runtime::set_diagnostics_handler;
 pub use runtime::{
@@ -30,7 +32,12 @@ pub use runtime::{
     set_runtime_trace,
 };
 #[cfg(all(feature = "agent-control", unix))]
-pub use runtime::{agent_control_enabled, set_agent_control_enabled, set_agent_control_handler};
+pub use runtime::{
+    agent_control_enabled, apply_runtime_debug_options, set_agent_control_enabled,
+    set_agent_control_handler,
+};
+#[cfg(feature = "agent-control")]
+pub use runtime::{deep_profiling_enabled, set_deep_profiling_enabled};
 mod webview;
 pub use webview::{BlitzWebviewDispatcher, PreparedBlitzWebview, prepare_pending_webview};
 mod window_dispatch;

@@ -16,9 +16,9 @@ This plane is for an AI agent or automation client operating the product:
 - pushed tree/lifecycle changes for efficient observation.
 
 Agent-control code is included by the runtime's default `agent-control` feature,
-but the complete interface starts disabled. The owner-controlled runtime setting
-must call `set_agent_control_enabled(true)` before any listener or descriptor
-exists; turning it off drops both. On macOS the enabled interface uses a
+but the complete interface starts disabled. The owner-controlled runtime settings
+must call `apply_runtime_debug_options` before any listener or descriptor exists;
+turning inspection/control off drops both. On macOS the enabled interface uses a
 Unix-domain socket rather than localhost HTTP, avoiding a browser-reachable port,
 token ceremony, or exclusive automation session. Calls use the standard MCP
 `tools/call` method with the `blitz.agent.control` tool; pushed state uses JSON-RPC
@@ -38,16 +38,18 @@ This plane is for debugging the implementation rather than operating the app:
 - renderer queue, invalidation, frame-stage, memory, and revision metrics;
 - debug screenshots tied to the same committed revision as their snapshots.
 
-Diagnostics collection and handlers are compiled only with the `diagnostics`
-feature and exposed as the separate `blitz.diagnostics` tool. Production agent
-control does not retain debug logs, DOM snapshots, or renderer telemetry.
+Diagnostics handlers are compiled only with the `diagnostics` feature and
+exposed as the separate `blitz.diagnostics` tool. Intrusive engine collectors
+are additionally dormant until the owner enables deep profiling at runtime.
+Production agent control therefore does not retain frame, script, DOM, or layout
+telemetry unless the second setting is explicitly on.
 
 ## Contract
 
 - The local agent-control listener and descriptor are absent by default and are
   created/destroyed together by the owner-controlled runtime setting.
-- Diagnostics are absent unless the `diagnostics` feature is compiled and
-  explicitly enabled at launch.
+- Deep profiling can be selected only while inspection/control is enabled;
+  disabling either clears retained samples.
 - Local transport only. There is no authentication or exclusive session.
 - A mode-0600 descriptor publishes the address, PID, instance id, protocol
   version, renderer, and renderer revision.
