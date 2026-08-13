@@ -200,6 +200,39 @@ pub fn agent_control_enabled() -> bool {
         .is_some_and(|runtime| runtime.lock().unwrap().server.is_some())
 }
 
+/// Apply both debug capabilities as one runtime category decision.
+///
+/// Deep profiling is always stopped when inspection/control is off, even if an
+/// embedder passes an inconsistent pair of booleans. Disabling it also clears
+/// retained samples so a later trace starts at its activation boundary.
+#[cfg(all(feature = "agent-control", unix))]
+pub fn apply_runtime_debug_options(
+    options: blitz_traits::profiling::DebugOptions,
+) -> std::io::Result<()> {
+    set_agent_control_enabled(options.inspection_and_agent_control)?;
+    set_deep_profiling_enabled(options.effective_deep_profiling());
+    Ok(())
+}
+
+/// Enable or disable the intrusive performance collectors shipped with the
+/// runtime. Inspection/control remains independently selectable.
+///
+/// Disabling also clears retained samples so a later user trace starts at its
+/// activation boundary rather than including unrelated background history.
+#[cfg(feature = "agent-control")]
+pub fn set_deep_profiling_enabled(enabled: bool) {
+    blitz_traits::profiling::set_deep_profiling_enabled(enabled);
+    if !enabled {
+        blitz_shell::clear_frame_stats();
+        blitz_script::script_stats::clear();
+    }
+}
+
+#[cfg(feature = "agent-control")]
+pub fn deep_profiling_enabled() -> bool {
+    blitz_traits::profiling::deep_profiling_enabled()
+}
+
 /// Install the UI-thread handler used by the feature-gated diagnostics tool.
 #[cfg(all(feature = "diagnostics", unix))]
 pub fn set_diagnostics_handler(
@@ -1960,10 +1993,21 @@ mod tests {
             .unwrap() = Some(Arc::downgrade(&runtime));
 
         assert!(!agent_control_enabled());
-        set_agent_control_enabled(true).unwrap();
+        apply_runtime_debug_options(blitz_traits::profiling::DebugOptions {
+            inspection_and_agent_control: true,
+            deep_intrusive_profiling: true,
+        })
+        .unwrap();
         assert!(agent_control_enabled());
-        set_agent_control_enabled(false).unwrap();
+        assert!(deep_profiling_enabled());
+        apply_runtime_debug_options(blitz_traits::profiling::DebugOptions {
+            inspection_and_agent_control: false,
+            // An inconsistent embedder request must not leave collection on.
+            deep_intrusive_profiling: true,
+        })
+        .unwrap();
         assert!(!agent_control_enabled());
+        assert!(!deep_profiling_enabled());
     }
 
     #[cfg(all(feature = "agent-control", target_os = "macos"))]
