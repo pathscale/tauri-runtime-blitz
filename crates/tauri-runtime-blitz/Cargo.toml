@@ -7,16 +7,16 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-anyrender_vello = { package = "ps-anyrender-vello", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
-anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea", optional = true }
-blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", rev = "950b5dabe4664cfe3425d63d9abe1766b9ca0037", optional = true }
-blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", rev = "950b5dabe4664cfe3425d63d9abe1766b9ca0037", features = ["system-fonts"] }
+anyrender_vello = { package = "ps-anyrender-vello", git = "https://github.com/pathscale/ps-anyrender.git", rev = "acb9714cedfa2a6adbac76f8e494f75af60ccc6e" }
+anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", git = "https://github.com/pathscale/ps-anyrender.git", rev = "acb9714cedfa2a6adbac76f8e494f75af60ccc6e", optional = true }
+blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", rev = "e5f4bd4f139145183dd97cdea4555b7718579230", optional = true }
+blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", rev = "e5f4bd4f139145183dd97cdea4555b7718579230", features = ["system-fonts"] }
 blitz-control-protocol = { path = "../blitz-control-protocol", optional = true }
-anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
+anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "acb9714cedfa2a6adbac76f8e494f75af60ccc6e" }
 peniko = "0.6"
 
-blitz-shell = { package = "ps-blitz-shell", git = "https://github.com/pathscale/ps-blitz.git", rev = "950b5dabe4664cfe3425d63d9abe1766b9ca0037", default-features = false, features = ["clipboard", "svg"] }
-blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", rev = "950b5dabe4664cfe3425d63d9abe1766b9ca0037", optional = true }
+blitz-shell = { package = "ps-blitz-shell", git = "https://github.com/pathscale/ps-blitz.git", rev = "e5f4bd4f139145183dd97cdea4555b7718579230", default-features = false, features = ["clipboard", "svg"] }
+blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", rev = "e5f4bd4f139145183dd97cdea4555b7718579230", optional = true }
 http = "1"
 endpoint-libs = { version = "2.1.5", default-features = false, features = ["agent-control"], optional = true }
 keyboard-types = { version = "0.7", optional = true }
