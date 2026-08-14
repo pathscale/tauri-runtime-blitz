@@ -1827,6 +1827,22 @@ fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
 /// samples and blurs what is behind the window every frame it is visible, and a
 /// non-opaque window gives up the opaque fast path. Measure that with
 /// `BLITZ_PHASE_TIMES`, not by reasoning about the Rust.
+/// The glass configuration the window is already in.
+///
+/// Applying is not idempotent at the AppKit level, so the only safe way to make
+/// a repeated request harmless is to not make it. See `set_window_glass`.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct AppliedGlass {
+    tint: Option<(u8, u8, u8, u8)>,
+    /// Bits, because `f64` is not `Eq` and this is only ever compared.
+    radius: Option<u64>,
+    enabled: bool,
+}
+
+#[cfg(target_os = "macos")]
+static APPLIED_GLASS: std::sync::OnceLock<Mutex<Option<AppliedGlass>>> = std::sync::OnceLock::new();
+
 /// The native window, kept so its chrome can be restyled after creation.
 ///
 /// The theme lives in CSS and changes while the app runs, but the glass view is
@@ -1846,6 +1862,33 @@ pub fn set_window_glass(tint: Option<(u8, u8, u8, u8)>, radius: Option<f64>, ena
     use window_vibrancy::{LiquidGlassOptions, NSGlassEffectViewStyle, apply_liquid_glass,
         clear_liquid_glass};
 
+    // Asking for the state the window is already in has to be free, because
+    // doing the work again is not harmless. `clear_liquid_glass` calls
+    // `restore_primary_content_view`, which removes the renderer's own content
+    // view from its superview and adds it back, and `apply_liquid_glass` moves
+    // it a second time. So a repeat call tears the surface out of the view
+    // hierarchy and rebuilds it, and the window is blank from then until
+    // something forces a full repaint: a scroll, usually, which is how this
+    // showed up. Dragging a slider in Settings is enough to trigger it, because
+    // every settled value writes settings and the settings broadcast asks for
+    // the chrome again.
+    //
+    // Compared by bits rather than value so the memo works for `f64`; the
+    // radius is either a copy of a number that was already sent or `None`, so
+    // there is no arithmetic in between to make two equal values differ.
+    let wanted = AppliedGlass {
+        tint,
+        radius: radius.map(f64::to_bits),
+        enabled,
+    };
+    let Some(memo) = APPLIED_GLASS.get_or_init(|| Mutex::new(None)).lock().ok() else {
+        return;
+    };
+    let mut memo = memo;
+    if *memo == Some(wanted) {
+        return;
+    }
+
     let Some(slot) = GLASS_WINDOW.get() else {
         return;
     };
@@ -1856,6 +1899,7 @@ pub fn set_window_glass(tint: Option<(u8, u8, u8, u8)>, radius: Option<f64>, ena
         return;
     };
     let window = window.as_ref();
+    *memo = Some(wanted);
 
     if !enabled {
         let _ = clear_liquid_glass(window);
