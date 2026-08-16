@@ -9,14 +9,14 @@ publish.workspace = true
 [dependencies]
 anyrender_vello = { package = "ps-anyrender-vello", git = "https://github.com/pathscale/ps-anyrender.git", rev = "f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef" }
 anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", git = "https://github.com/pathscale/ps-anyrender.git", rev = "f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef", optional = true }
-blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", rev = "b82e649d4b89757897a74a23274cedd2c096e557", optional = true }
-blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", rev = "b82e649d4b89757897a74a23274cedd2c096e557", features = ["system-fonts"] }
+blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", branch = "master", optional = true }
+blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", branch = "master", features = ["system-fonts"] }
 blitz-control-protocol = { path = "../blitz-control-protocol", optional = true }
 anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef" }
 peniko = "0.6"
 
-blitz-shell = { package = "ps-blitz-shell", git = "https://github.com/pathscale/ps-blitz.git", rev = "b82e649d4b89757897a74a23274cedd2c096e557", default-features = false, features = ["clipboard", "svg"] }
-blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", rev = "b82e649d4b89757897a74a23274cedd2c096e557", optional = true }
+blitz-shell = { package = "ps-blitz-shell", git = "https://github.com/pathscale/ps-blitz.git", branch = "master", default-features = false, features = ["clipboard", "svg"] }
+blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", branch = "master", optional = true }
 http = "1"
 endpoint-libs = { version = "2.1.5", default-features = false, features = ["agent-control"], optional = true }
 keyboard-types = { version = "0.7", optional = true }
