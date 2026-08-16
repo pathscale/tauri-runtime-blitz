@@ -2189,13 +2189,34 @@ mod tests {
         .unwrap();
         assert!(agent_control_enabled());
         assert!(deep_profiling_enabled());
+        // The two switches are independent, and this is the case that proves
+        // it: inspection off, profiling still on.
+        //
+        // This once asserted the opposite, on the reasoning that samples are
+        // only useful while a socket exists to read them back. ps-blitz
+        // e47684f4 removed that AND deliberately, because the collectors also
+        // feed the frame log and phase timings, which need no socket, and
+        // ANDing made the embedder's profiling toggle silently inert whenever
+        // inspection was off: turning inspection off and on again lost the
+        // setting entirely.
+        //
+        // The assertion was not updated with it, so this test failed on its own
+        // and was misread as one test leaking process-global state into
+        // another. It fails alone, at exactly this line.
         apply_runtime_debug_options(blitz_traits::profiling::DebugOptions {
             inspection_and_agent_control: false,
-            // An inconsistent embedder request must not leave collection on.
             deep_intrusive_profiling: true,
         })
         .unwrap();
         assert!(!agent_control_enabled());
+        assert!(
+            deep_profiling_enabled(),
+            "deep profiling answers for itself; inspection must not switch it off"
+        );
+
+        // Left off, because it is process-global and the next test in this
+        // binary starts wherever this one stops.
+        apply_runtime_debug_options(blitz_traits::profiling::DebugOptions::default()).unwrap();
         assert!(!deep_profiling_enabled());
     }
 
