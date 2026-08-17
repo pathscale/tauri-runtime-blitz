@@ -61,6 +61,7 @@ impl AgentControlServer {
             renderer_revision: env!("CARGO_PKG_VERSION").into(),
         };
         write_descriptor(&descriptor_path, &descriptor)?;
+        reap_dead_descriptors(&descriptor_path);
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let thread = thread::Builder::new()
@@ -233,6 +234,60 @@ fn instance_id() -> String {
         .unwrap_or_default()
         .as_nanos();
     format!("{}-{nanos:x}", std::process::id())
+}
+
+/// Whether a pid still names a live process.
+///
+/// `kill(pid, 0)` without a libc dependency, and `/proc` does not exist on
+/// macOS. A `ps` that cannot be run at all reports "live", because deleting
+/// another instance's descriptor on a bad guess is far worse than keeping a
+/// stale file.
+fn pid_is_live(pid: u32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-p", &pid.to_string()])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(true)
+}
+
+/// Delete descriptors whose process is gone.
+///
+/// The name carries a pid and a nanosecond stamp, so every launch leaves a new
+/// pair behind and nothing ever removed them: a developer machine accumulates
+/// them indefinitely, and one here had **99**. `Drop` cleans up an orderly
+/// exit, but a crash, a `kill -9`, or a rebuild that unlinks the socket under a
+/// running instance all skip it.
+///
+/// That is not merely untidy. A tool with no `TAURI_BLITZ_CONTROL_DESCRIPTOR`
+/// has to guess which of them is current, and a directory full of dead entries
+/// is what makes "attached to a stale socket and reported numbers for a process
+/// nobody is looking at" a routine failure rather than a rare one.
+///
+/// Only entries whose pid is dead are removed, so concurrent instances are left
+/// strictly alone — and this one's own descriptor is skipped by path, since it
+/// has just been written and its pid is obviously live.
+fn reap_dead_descriptors(own: &Path) {
+    let Some(dir) = own.parent() else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == own || path.extension().is_none_or(|ext| ext != "json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(descriptor) = serde_json::from_str::<DebugDescriptor>(&text) else {
+            continue;
+        };
+        if pid_is_live(descriptor.pid) {
+            continue;
+        }
+        let _ = remove_file(path.with_extension("sock"));
+        let _ = remove_file(&path);
+    }
 }
 
 fn descriptor_path(instance_id: &str) -> PathBuf {
@@ -493,5 +548,77 @@ mod tests {
         };
         let decoded: JsonRpcMessage = serde_json::from_str(&payload).unwrap();
         assert!(matches!(decoded, JsonRpcMessage::Response(_)));
+    }
+
+    /**
+     * A dead instance's descriptor goes; a live one's stays.
+     *
+     * The filename carries a pid and a nanosecond stamp, so every launch leaves
+     * a new pair behind and nothing removed them — one machine had 99. `Drop`
+     * handles an orderly exit, but a crash, a `kill -9`, or a rebuild that
+     * unlinks the socket under a running instance all skip it. A tool with no
+     * `TAURI_BLITZ_CONTROL_DESCRIPTOR` then has to guess which is current,
+     * which is how attaching to a stale socket became routine.
+     *
+     * The asymmetry is the whole point: reaping too eagerly would delete a
+     * concurrent instance's descriptor, which is worse than leaving litter.
+     */
+    #[test]
+    fn reaping_removes_dead_descriptors_and_spares_live_ones() {
+        let dir = std::env::temp_dir().join(format!(
+            "blitz-reap-{}-{:x}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch directory is created");
+
+        let write = |name: &str, pid: u32| {
+            let path = dir.join(format!("{name}.json"));
+            write_descriptor(
+                &path,
+                &DebugDescriptor {
+                    protocol_version: crate::control_protocol::DEBUG_PROTOCOL_VERSION,
+                    pid,
+                    instance_id: name.into(),
+                    address: format!("unix://{}", dir.join(format!("{name}.sock")).display()),
+                    renderer: "blitz".into(),
+                    renderer_revision: "0.0.0".into(),
+                },
+            )
+            .expect("descriptor is written");
+            std::fs::write(dir.join(format!("{name}.sock")), b"").expect("socket stub is written");
+            path
+        };
+
+        // pid 1 is always alive; a pid this process just observed as its own
+        // child cannot be, because `ps` has already reaped it.
+        let own = write("own", std::process::id());
+        let live = write("live", 1);
+        let dead = write("dead", dead_pid());
+
+        reap_dead_descriptors(&own);
+
+        assert!(own.exists(), "the caller's own descriptor is never reaped");
+        assert!(live.exists(), "a live instance must keep its descriptor");
+        assert!(!dead.exists(), "a dead instance's descriptor is removed");
+        assert!(
+            !dir.join("dead.sock").exists(),
+            "the orphaned socket goes with it"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A pid that has certainly exited: spawn something trivial and wait for it.
+    fn dead_pid() -> u32 {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("`true` runs");
+        let pid = child.id();
+        child.wait().expect("`true` exits");
+        pid
     }
 }
