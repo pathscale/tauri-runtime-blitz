@@ -95,10 +95,40 @@ fn diagnostic_layout_row(
         Some(styles) => styles.effective_zoom.unzoom(value),
         None => value,
     };
+    // Every field here is unzoomed, including the two that used to be raw.
+    //
+    // `scrollOffset` and `scrollRange` came straight off the layout while
+    // `clientSize` and `scrollSize` went through `unzoom`, so a single row
+    // carried two unit systems and any arithmetic across them was wrong by the
+    // zoom factor. Under zoom that makes every scroller read as overscrolled,
+    // and it is not only a reading error: a consumer testing
+    // `scrollOffset < scrollSize - clientSize` for "is there more to scroll"
+    // gets a false negative at the true end. AgencyZero's tab strip disabled
+    // its right chevron that way, with the new-tab button still off screen.
+    //
+    // Unzoomed is the right side to land on because it is what the DOM already
+    // reports: `blitz-script`'s `scrollLeft`/`scrollTop` unzoom before
+    // answering, so a raw diagnostic also disagreed with the same measurement
+    // taken from script.
+    //
+    // Not covered by a unit test, deliberately rather than by omission. The
+    // existing row test runs at zoom 1, where `unzoom` is the identity and a
+    // mixed row is indistinguishable from a consistent one. Reproducing it
+    // needs a scroller that is itself zoomed, and in this engine `zoom` on an
+    // `overflow-y:auto` element leaves `scroll_height()` at 0 while `zoom` on
+    // its child does not reach the scroller's own styles — so a test asserting
+    // the relation either holds vacuously (0 == 0) or fails its own setup.
+    // Verified against a running instance instead: the tab strip reported
+    // scroll=489.0 against client=862.1 / content=1283.6, where the true slack
+    // is 421.5 and 489 is that same distance zoomed.
+    let scroll_offset = dom_node.scroll_offset();
     Some(serde_json::json!({
         "nodeId": node.id,
         "bounds": bounds,
-        "scrollOffset": [dom_node.scroll_offset().x, dom_node.scroll_offset().y],
+        "scrollOffset": [
+            unzoom(scroll_offset.x as f32),
+            unzoom(scroll_offset.y as f32)
+        ],
         "clientSize": [
             unzoom(layout.size.width),
             unzoom(layout.size.height)
@@ -108,8 +138,8 @@ fn diagnostic_layout_row(
             unzoom(layout.size.height + layout.scroll_height())
         ],
         "scrollRange": [
-            layout.scroll_width(),
-            layout.scroll_height()
+            unzoom(layout.scroll_width()),
+            unzoom(layout.scroll_height())
         ]
     }))
 }
