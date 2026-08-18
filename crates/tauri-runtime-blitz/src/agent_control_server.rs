@@ -36,6 +36,17 @@ pub(crate) struct AgentControlServer {
     socket_path: PathBuf,
     shutdown: Option<oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
+    /// Holds deep-profiling collection open while a tool can attach.
+    ///
+    /// The consumer is out of process, so it cannot hold a session itself and
+    /// the server holds one on its behalf. The server's lifetime is the right
+    /// one: it exists exactly while the socket is listening, and a per-request
+    /// session would be useless, because the frames a snapshot reports were
+    /// presented before the request arrived.
+    ///
+    /// `None` when the profile does not permit sampling, which is the ordinary
+    /// case: inspection without deep profiling stays free.
+    _sampling: Option<blitz_shell::DeepProfilingSession>,
 }
 
 impl AgentControlServer {
@@ -73,6 +84,10 @@ impl AgentControlServer {
             socket_path,
             shutdown: Some(shutdown_tx),
             thread: Some(thread),
+            // Taken after the socket is listening, so a permitted profile
+            // begins collecting for the tool that is now able to attach, and
+            // stops again when this server is dropped.
+            _sampling: blitz_shell::begin_deep_profiling(),
         })
     }
 

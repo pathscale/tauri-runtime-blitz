@@ -40,7 +40,10 @@ pub use runtime::{
     set_agent_control_handler,
 };
 #[cfg(feature = "agent-control")]
-pub use runtime::{deep_profiling_enabled, set_deep_profiling_enabled};
+pub use runtime::{
+    begin_deep_profiling, deep_profiling_enabled, deep_profiling_permitted,
+    set_deep_profiling_permitted,
+};
 mod webview;
 pub use webview::{BlitzWebviewDispatcher, PreparedBlitzWebview, prepare_pending_webview};
 mod window_dispatch;
