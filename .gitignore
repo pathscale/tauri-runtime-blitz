@@ -1,3 +1,7 @@
 target/
 Cargo.lock
 .DS_Store
+
+# Handover and session notes are never committed. See AGENTS.md.
+HANDOVER*.md
+docs/HANDOVER*.md
