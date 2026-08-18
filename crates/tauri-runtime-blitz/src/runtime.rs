@@ -239,21 +239,49 @@ pub fn agent_control_enabled() -> bool {
 pub fn apply_runtime_debug_options(
     options: blitz_traits::profiling::DebugOptions,
 ) -> std::io::Result<()> {
+    // Permission first, then the server. The server takes a profiling session
+    // as it starts listening, and that session is only available once sampling
+    // is permitted: starting it first meant the consumer asked for samples
+    // before the answer could be yes, and collection never began.
+    set_deep_profiling_permitted(options.effective_deep_profiling());
     set_agent_control_enabled(options.inspection_and_agent_control)?;
-    set_deep_profiling_enabled(options.effective_deep_profiling());
     Ok(())
 }
 
-/// Enable or disable the intrusive performance collectors shipped with the
+/// Permit or forbid the intrusive performance collectors shipped with the
 /// runtime. Inspection/control remains independently selectable.
 ///
-/// Disabling also clears retained samples so a later user trace starts at its
-/// activation boundary rather than including unrelated background history.
+/// This grants permission and starts nothing. Collection runs only while a
+/// consumer holds a session from [`begin_deep_profiling`], because samples with
+/// no reader have no value and are not free: the readers here are the inspector
+/// and `blitz-bench`, and both are separate processes, so the ordinary case for
+/// an embedder that merely had the setting on was to collect for nobody.
+///
+/// Forbidding also releases retained samples, so a capability that is off holds
+/// nothing.
 #[cfg(feature = "agent-control")]
-pub fn set_deep_profiling_enabled(enabled: bool) {
-    blitz_shell::set_deep_profiling_enabled(enabled);
+pub fn set_deep_profiling_permitted(permitted: bool) {
+    blitz_shell::set_deep_profiling_permitted(permitted);
 }
 
+/// Ask for samples for as long as the returned session is held.
+///
+/// `None` when the profile does not permit sampling. An out-of-process consumer
+/// cannot hold this directly, so the request handler serving it holds one for
+/// the life of the request.
+#[cfg(feature = "agent-control")]
+#[must_use = "sampling stops as soon as the session is dropped"]
+pub fn begin_deep_profiling() -> Option<blitz_shell::DeepProfilingSession> {
+    blitz_shell::begin_deep_profiling()
+}
+
+/// Whether the owner has permitted sampling, regardless of any consumer.
+#[cfg(feature = "agent-control")]
+pub fn deep_profiling_permitted() -> bool {
+    blitz_traits::profiling::deep_profiling_permitted()
+}
+
+/// Whether collection is actually running: permitted, and a consumer attached.
 #[cfg(feature = "agent-control")]
 pub fn deep_profiling_enabled() -> bool {
     blitz_traits::profiling::deep_profiling_enabled()
@@ -2218,21 +2246,26 @@ mod tests {
         })
         .unwrap();
         assert!(agent_control_enabled());
-        assert!(deep_profiling_enabled());
+        assert!(
+            deep_profiling_permitted(),
+            "the embedder's switch is permission, and it was just granted"
+        );
+        // Permission plus a consumer. The control server holds a session for
+        // the out-of-process tool that can now attach, so collection is running
+        // here even though nothing in this process reads a sample.
+        assert!(
+            deep_profiling_enabled(),
+            "a listening control server is the consumer that starts collection"
+        );
+
         // The two switches are independent, and this is the case that proves
-        // it: inspection off, profiling still on.
+        // it: inspection off, profiling still permitted.
         //
         // This once asserted the opposite, on the reasoning that samples are
         // only useful while a socket exists to read them back. ps-blitz
-        // e47684f4 removed that AND deliberately, because the collectors also
-        // feed the frame log and phase timings, which need no socket, and
-        // ANDing made the embedder's profiling toggle silently inert whenever
-        // inspection was off: turning inspection off and on again lost the
-        // setting entirely.
-        //
-        // The assertion was not updated with it, so this test failed on its own
-        // and was misread as one test leaking process-global state into
-        // another. It fails alone, at exactly this line.
+        // e47684f4 removed that AND deliberately, because ANDing made the
+        // embedder's profiling toggle silently inert whenever inspection was
+        // off: turning inspection off and on again lost the setting entirely.
         apply_runtime_debug_options(blitz_traits::profiling::DebugOptions {
             inspection_and_agent_control: false,
             deep_intrusive_profiling: true,
@@ -2240,13 +2273,21 @@ mod tests {
         .unwrap();
         assert!(!agent_control_enabled());
         assert!(
-            deep_profiling_enabled(),
-            "deep profiling answers for itself; inspection must not switch it off"
+            deep_profiling_permitted(),
+            "deep profiling answers for itself; inspection must not withdraw permission"
+        );
+        // But collection stops, because closing the server dropped the only
+        // consumer. That is the point of the change rather than a regression:
+        // with no tool able to attach, the samples had no reader.
+        assert!(
+            !deep_profiling_enabled(),
+            "no consumer can attach, so nothing should still be collecting"
         );
 
         // Left off, because it is process-global and the next test in this
         // binary starts wherever this one stops.
         apply_runtime_debug_options(blitz_traits::profiling::DebugOptions::default()).unwrap();
+        assert!(!deep_profiling_permitted());
         assert!(!deep_profiling_enabled());
     }
 
