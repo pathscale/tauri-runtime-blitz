@@ -1976,8 +1976,22 @@ pub fn set_window_glass(tint: Option<(u8, u8, u8, u8)>, radius: Option<f64>, ena
     *memo = Some(wanted);
 
     if !enabled {
+        detach_window_backdrop(window);
         let _ = clear_liquid_glass(window);
         runtime_trace("window glass cleared");
+        return;
+    }
+
+    /*
+     * The backdrop goes behind the content, which is the whole point.
+     *
+     * `apply_liquid_glass` is not used for this: it inserts its glass view as a
+     * subview of the renderer's own view, so the glass ends up on top of
+     * everything drawn and frosts the application rather than backing it. Only
+     * the pre-macOS-26 fallback below still goes through the crate, because a
+     * vibrancy material is the thing being asked for there.
+     */
+    if attach_window_backdrop(window, tint, radius) {
         return;
     }
 
@@ -2001,6 +2015,133 @@ pub fn set_window_glass(tint: Option<(u8, u8, u8, u8)>, radius: Option<f64>, ena
             apply_window_glass(window);
         }
         Err(error) => runtime_trace(&format!("could not restyle window glass: {error}")),
+    }
+}
+
+/// Put a blurred backdrop *behind* the window's content.
+///
+/// # Why this is not `window_vibrancy::apply_liquid_glass`
+///
+/// That function takes the view from the window handle, which is the renderer's
+/// own view, and inserts its `NSGlassEffectView` as a subview of it sized to its
+/// bounds. The glass therefore sits inside and on top of everything the renderer
+/// draws, and `NSGlassEffectView` blurs what is behind it, so the result is the
+/// whole application frosted: text, controls, every pixel. That is what shipped
+/// once and had to be reverted.
+///
+/// A window backdrop is a sibling, not a parent and not a child. The glass goes
+/// into the window's `contentView` *below* the renderer's view, so it blurs the
+/// desktop showing through a transparent window and the content draws over it
+/// untouched.
+///
+/// Returns whether the backdrop was attached, so the caller can fall back.
+#[cfg(target_os = "macos")]
+fn attach_window_backdrop(
+    window: &dyn winit::window::Window,
+    tint: Option<(u8, u8, u8, u8)>,
+    radius: Option<f64>,
+) -> bool {
+    use objc2::rc::Retained;
+    use objc2_app_kit::{
+        NSAutoresizingMaskOptions, NSColor, NSGlassEffectView, NSGlassEffectViewStyle,
+        NSUserInterfaceItemIdentification, NSView, NSWindowOrderingMode,
+    };
+    use objc2_foundation::MainThreadMarker;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        runtime_trace("window backdrop needs the main thread");
+        return false;
+    };
+
+    let Ok(handle) = window.window_handle() else {
+        return false;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return false;
+    };
+
+    // The renderer's view. Its superview is the window's content view, which is
+    // where a sibling has to go.
+    let content = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
+    let superview = unsafe { content.superview() };
+    let Some(container) = superview else {
+        runtime_trace("window backdrop: the renderer's view has no superview yet");
+        return false;
+    };
+
+    // Replacing rather than stacking: applying twice would tint through two
+    // views and the pair is not the colour that was asked for.
+    detach_window_backdrop(window);
+
+    let bounds = container.bounds();
+    let glass: Retained<NSGlassEffectView> =
+        unsafe { NSGlassEffectView::initWithFrame(mtm.alloc(), bounds) };
+
+    glass.setStyle(NSGlassEffectViewStyle::Regular);
+    if let Some(radius) = radius {
+        glass.setCornerRadius(radius);
+    }
+    if let Some((r, g, b, a)) = tint {
+        let color = unsafe {
+            NSColor::colorWithRed_green_blue_alpha(
+                f64::from(r) / 255.0,
+                f64::from(g) / 255.0,
+                f64::from(b) / 255.0,
+                f64::from(a) / 255.0,
+            )
+        };
+        unsafe { glass.setTintColor(Some(&color)) };
+    }
+    glass.setAutoresizingMask(
+        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+    );
+    unsafe { glass.setIdentifier(Some(&objc2_foundation::NSString::from_str(BACKDROP_ID))) };
+
+    // Below the renderer's view, so the content is drawn over the blur rather
+    // than through it.
+    unsafe {
+        container.addSubview_positioned_relativeTo(
+            &glass,
+            NSWindowOrderingMode::Below,
+            Some(content),
+        );
+    }
+
+    runtime_trace("window backdrop attached behind the content");
+    true
+}
+
+/// The identifier the backdrop is tagged with, so it can be found again.
+#[cfg(target_os = "macos")]
+const BACKDROP_ID: &str = "az-window-backdrop";
+
+/// Remove a backdrop this module attached, leaving any other view alone.
+#[cfg(target_os = "macos")]
+fn detach_window_backdrop(window: &dyn winit::window::Window) {
+    use objc2_app_kit::{NSUserInterfaceItemIdentification, NSView};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+    let content = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
+    let superview = unsafe { content.superview() };
+    let Some(container) = superview else {
+        return;
+    };
+
+    // Identifier rather than type, so a glass view some other code owns is not
+    // torn out from under it.
+    for view in container.subviews().iter() {
+        let matches = unsafe { view.identifier() }
+            .is_some_and(|id| id.to_string() == BACKDROP_ID);
+        if matches {
+            view.removeFromSuperview();
+        }
     }
 }
 

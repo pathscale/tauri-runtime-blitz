@@ -48,3 +48,34 @@ tauri = { version = "=2.11.5", default-features = false, features = ["test"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 window-vibrancy = "0.8.0"
+
+# AppKit, for the window backdrop.
+#
+# `window_vibrancy::apply_liquid_glass` inserts its glass view as a *subview of
+# the renderer's own view*, so the glass sits on top of the content and frosts
+# the application. A window backdrop has to be a sibling behind the renderer, in
+# the window's `contentView`, which needs the view hierarchy directly. Versions
+# match what `window-vibrancy` already resolves so there is one copy of each.
+[target.'cfg(target_os = "macos")'.dependencies.objc2]
+version = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2-app-kit]
+version = "0.3.2"
+default-features = false
+features = [
+    "std",
+    "objc2-core-foundation",
+    "objc2-quartz-core",
+    "NSColor",
+    "NSGlassEffectView",
+    "NSResponder",
+    "NSUserInterfaceItemIdentification",
+    "NSView",
+    "NSVisualEffectView",
+    "NSWindow",
+]
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2-foundation]
+version = "0.3"
+default-features = false
+features = ["std", "NSGeometry"]
