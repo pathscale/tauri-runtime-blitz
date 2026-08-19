@@ -1844,9 +1844,25 @@ fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
             if let Ok(mut guard) = slot.lock() {
                 *guard = Some(Arc::clone(&native));
             }
-            if state_for_creation.config.lock().unwrap().transparent {
-                apply_window_glass(native.as_ref());
-            }
+            /*
+             * Deliberately not applied here, transparent or not.
+             *
+             * `apply_liquid_glass` does not put a blurred layer behind the
+             * window: `window_vibrancy` moves the renderer's content view
+             * *inside* the `NSGlassEffectView`, and that view blurs its
+             * subviews, so the whole application is frosted, text included.
+             * A transparent window is therefore not on its own a reason to
+             * attach it.
+             *
+             * Doing it at creation also cost a visible flash. The app asks for
+             * the chrome it wants once the stylesheet is up, so a window that
+             * did not want glass was frosted for the half second until that
+             * call cleared it, and clearing tears the content view out of the
+             * hierarchy and puts it back.
+             *
+             * `set_window_glass` remains the way in, and the handle above is
+             * what makes it reachable.
+             */
         }
         *state_for_creation.native.lock().unwrap() = Some(native);
         if let Some(callback) = after_window_creation {
@@ -1973,11 +1989,17 @@ pub fn set_window_glass(tint: Option<(u8, u8, u8, u8)>, radius: Option<f64>, ena
     if let Some(tint) = tint {
         options = options.tint_color(tint);
     }
+    // `apply_window_glass` carries the pre-macOS-26 vibrancy fallback, and this
+    // is now the only caller, so the styled path has to keep reaching it when
+    // liquid glass is unavailable rather than silently applying nothing.
     if let Some(radius) = radius {
         options = options.radius(radius);
     }
     match apply_liquid_glass(window, options) {
         Ok(()) => runtime_trace("window glass restyled from the stylesheet"),
+        Err(window_vibrancy::Error::UnsupportedPlatformVersion(_)) => {
+            apply_window_glass(window);
+        }
         Err(error) => runtime_trace(&format!("could not restyle window glass: {error}")),
     }
 }
