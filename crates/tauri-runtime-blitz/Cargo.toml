@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 anyrender_vello = { package = "ps-anyrender-vello", git = "https://github.com/pathscale/ps-anyrender.git", rev = "f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef" }
 anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", git = "https://github.com/pathscale/ps-anyrender.git", rev = "f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef", optional = true }
+style = { version = "0.20.0", package = "stylo" }
 blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", branch = "master", optional = true }
 blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", branch = "master", features = ["system-fonts"] }
 blitz-control-protocol = { path = "../blitz-control-protocol", optional = true }
