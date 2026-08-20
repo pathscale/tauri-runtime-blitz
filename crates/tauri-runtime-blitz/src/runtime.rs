@@ -83,6 +83,72 @@ static AGENT_CONTROL_RUNTIME: OnceLock<Mutex<Option<Weak<Mutex<AgentControlRunti
 #[cfg(all(feature = "diagnostics", unix))]
 static DIAGNOSTICS_HANDLER: OnceLock<RwLock<Option<Arc<DiagnosticsHandler>>>> = OnceLock::new();
 
+/// The colours a node actually resolved to, as `#rrggbbaa`.
+///
+/// The point of reporting these rather than the stylesheet is that they are the
+/// end of the chain: the cascade, every custom-property indirection and the
+/// `@supports` gating have already been applied, so a disagreement between what
+/// a rule declares and what an element paints shows up here and nowhere else.
+/// That disagreement is exactly the shape of "this text is invisible and the CSS
+/// says it should not be", which cannot be settled by reading files.
+///
+/// Four properties rather than a full longhand dump: a complete style for every
+/// node in a real application is megabytes of JSON that nobody reads, and these
+/// are the ones legibility depends on.
+#[cfg(all(feature = "diagnostics", unix))]
+fn diagnostic_style_row(
+    document: &blitz_dom::BaseDocument,
+    node: &SemanticNode,
+) -> Option<serde_json::Value> {
+    let dom_node = document.get_node(NodeId::from_u64(node.id))?;
+    let styles = dom_node.primary_styles()?;
+
+    let current = styles.clone_color();
+    // The same conversion `blitz-paint` does before handing a colour to the
+    // rasteriser, inlined so this crate does not need that extension trait.
+    let hex = |absolute: style::color::AbsoluteColor| {
+        let [r, g, b, a] = *absolute
+            .to_color_space(style::color::ColorSpace::Srgb)
+            .raw_components();
+        let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+        format!(
+            "#{:02x}{:02x}{:02x}{:02x}",
+            channel(r),
+            channel(g),
+            channel(b),
+            channel(a),
+        )
+    };
+
+    /*
+     * Reported as a plain number of pixels rather than stylo's debug shape,
+     * which nothing reading this over the wire can parse - and being able to
+     * read it is the entire reason the field exists.
+     */
+    let radius = format!("{:?}", styles.get_border().border_top_left_radius.0.width);
+
+    Some(serde_json::json!({
+        "nodeId": node.id,
+        "color": hex(current),
+        "backgroundColor": hex(
+            styles.clone_background_color().resolve_to_absolute(&current),
+        ),
+        "opacity": styles.clone_opacity(),
+        /*
+         * The corner, as the renderer resolved it.
+         *
+         * Radius is set from three unrelated places in a themed application -
+         * the library's own component CSS, the theme's tokens, and utility
+         * classes at the call site - and which one wins is a cascade question
+         * that reading any single file cannot answer. Reported repeatedly as
+         * "radius is wrong" with no way to tell *which* of the three was
+         * responsible; this is what settles it per element.
+         */
+        "borderTopLeftRadius": radius,
+        "visibility": format!("{:?}", styles.clone_visibility()),
+    }))
+}
+
 #[cfg(all(feature = "diagnostics", unix))]
 fn diagnostic_layout_row(
     document: &blitz_dom::BaseDocument,
@@ -736,12 +802,6 @@ impl<T: UserEvent> RuntimeApplication<T> {
         &mut self,
         request: SnapshotRequest,
     ) -> Result<DebugSnapshot, DebugError> {
-        if request.include_computed_style {
-            return Err(debug_error(
-                "computedStyleUnavailable",
-                "computed-style snapshots are not implemented",
-            ));
-        }
         self.agent_revision += 1;
         let revision = self.agent_revision;
         let started = std::time::Instant::now();
@@ -901,12 +961,36 @@ impl<T: UserEvent> RuntimeApplication<T> {
                     .collect(),
             )
         });
+        /*
+         * Resolved colours, folded into the layout rows.
+         *
+         * This used to answer `computedStyleUnavailable`, which left one class
+         * of bug unanswerable from outside: an element whose *declared* colour
+         * is correct and whose *painted* colour is not. Reading the stylesheet
+         * cannot settle that - the cascade, the custom-property chain and the
+         * `@supports` gating all sit between the two - and neither can a DOM
+         * test environment, which has no cascade at all.
+         *
+         * Only the four that decide legibility, rather than a full style dump:
+         * a snapshot of every longhand for 4,500 nodes is megabytes of JSON
+         * nobody reads, and these are what a "why is this text invisible"
+         * question actually needs.
+         */
+        let computed_style = request.include_computed_style.then(|| {
+            serde_json::Value::Array(
+                nodes
+                    .iter()
+                    .filter_map(|node| diagnostic_style_row(&inner, node))
+                    .collect(),
+            )
+        });
         Ok(DebugSnapshot {
             revisions,
             active_window: Some("blitz-main".into()),
             active_element,
             dom,
             layout,
+            computed_style,
             metrics,
         })
     }
