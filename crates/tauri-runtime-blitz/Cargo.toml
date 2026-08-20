@@ -10,14 +10,14 @@ publish.workspace = true
 anyrender_vello = { package = "ps-anyrender-vello", git = "https://github.com/pathscale/ps-anyrender.git", rev = "f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef" }
 anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", git = "https://github.com/pathscale/ps-anyrender.git", rev = "f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef", optional = true }
 style = { version = "0.20.0", package = "stylo" }
-blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", branch = "master", optional = true }
-blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", branch = "master", features = ["system-fonts"] }
+blitz-dom = { package = "ps-blitz-dom", git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf", optional = true }
+blitz-script = { package = "ps-blitz-script", git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf", features = ["system-fonts"] }
 blitz-control-protocol = { path = "../blitz-control-protocol", optional = true }
 anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "f1c53ba12aa8a8691ba5a04976c0cab4bffb76ef" }
 peniko = "0.6"
 
-blitz-shell = { package = "ps-blitz-shell", git = "https://github.com/pathscale/ps-blitz.git", branch = "master", default-features = false, features = ["clipboard", "svg"] }
-blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", branch = "master", optional = true }
+blitz-shell = { package = "ps-blitz-shell", git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf", default-features = false, features = ["clipboard", "svg"] }
+blitz-traits = { package = "ps-blitz-traits", git = "https://github.com/pathscale/ps-blitz.git", rev = "3f4bd1890b3183e28b66e5b032e01b4b8c6a9faf", optional = true }
 http = "1"
 endpoint-libs = { version = "2.1.5", default-features = false, features = ["agent-control"], optional = true }
 keyboard-types = { version = "0.7", optional = true }
