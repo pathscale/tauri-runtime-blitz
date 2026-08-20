@@ -248,6 +248,13 @@ pub struct DebugSnapshot {
     pub active_element: Option<u64>,
     pub dom: Option<serde_json::Value>,
     pub layout: Option<serde_json::Value>,
+    /// Resolved colours per node, when `include_computed_style` was set.
+    ///
+    /// Only the properties that decide legibility. A full longhand dump for
+    /// every node is megabytes of JSON nobody reads, and these are what a
+    /// question about invisible text actually needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computed_style: Option<serde_json::Value>,
     pub metrics: RendererMetrics,
 }
 
