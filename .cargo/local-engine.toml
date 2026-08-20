@@ -1,9 +1,0 @@
-# Build against the working ps-blitz checkout instead of the pinned revision.
-# Untracked: it names paths that exist on one machine.
-[patch."https://github.com/pathscale/ps-blitz.git"]
-ps-blitz-dom = { path = "../ps-blitz/packages/blitz-dom" }
-blitz-html = { path = "../ps-blitz/packages/blitz-html" }
-blitz-paint = { path = "../ps-blitz/packages/blitz-paint" }
-ps-blitz-script = { path = "../ps-blitz/packages/blitz-script" }
-ps-blitz-shell = { path = "../ps-blitz/packages/blitz-shell" }
-ps-blitz-traits = { path = "../ps-blitz/packages/blitz-traits" }
