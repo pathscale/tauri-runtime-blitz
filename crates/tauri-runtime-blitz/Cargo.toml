@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+homepage.workspace = true
+repository.workspace = true
 
 [dependencies]
 anyrender_vello = { package = "ps-anyrender-vello", version = "^0.14.0" }
@@ -12,7 +14,7 @@ anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", version = "^0.
 style = { version = "0.20.0", package = "stylo" }
 blitz-dom = { package = "ps-blitz-dom", version = "^0.3.0-beta.6", optional = true }
 blitz-script = { package = "ps-blitz-script", version = "^0.3.0-beta.6", features = ["system-fonts"] }
-blitz-control-protocol = { path = "../blitz-control-protocol", optional = true }
+blitz-control-protocol = { path = "../blitz-control-protocol", version = "0.1.0", optional = true }
 anyrender = { package = "ps-anyrender", version = "^0.13.0" }
 peniko = "0.6"
 
@@ -42,7 +44,14 @@ diagnostics = ["agent-control", "debug-control"]
 # does far less per primitive, which is the same bet GPUI makes.
 hybrid-renderer = ["dep:anyrender_vello_hybrid"]
 devtools = ["tauri-runtime/devtools"]
-macos-private-api = []
+# Forwarded, not an empty flag. `WindowBuilder::transparent` is declared behind
+# this feature in `tauri-runtime` and implemented behind it here, so enabling it
+# on only one side leaves the impl carrying a method the trait does not declare:
+# "method `transparent` is not a member of trait `WindowBuilder`". An empty
+# feature here meant `--all-features` turned this on without turning it on for
+# `tauri-runtime`, which is exactly that mismatch, and it is why this crate
+# could not be packaged: crates.io verifies with every feature enabled.
+macos-private-api = ["tauri/macos-private-api", "tauri-runtime/macos-private-api"]
 
 [dev-dependencies]
 tauri = { version = "=2.11.5", default-features = false, features = ["test"] }

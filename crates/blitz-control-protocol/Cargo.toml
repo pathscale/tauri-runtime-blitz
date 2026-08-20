@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+homepage.workspace = true
+repository.workspace = true
 
 # Deliberately tiny. This crate exists so a client can speak the protocol
 # without building the runtime that serves it: adding anything here that pulls

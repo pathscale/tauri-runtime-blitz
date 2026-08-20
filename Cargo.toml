@@ -6,15 +6,6 @@ members = ["crates/blitz-control-protocol", "crates/tauri-runtime-blitz"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-publish = false
+publish = true
 homepage = "https://github.com/pathscale/tauri-runtime-blitz"
 repository = "https://github.com/pathscale/tauri-runtime-blitz"
-
-# ps-blitz calls `usvg::Tree::intrinsic_dimensions`, which exists on no released
-# usvg. Cargo only honours `[patch]` from the root workspace, so building this
-# crate on its own needs the same redirection ps-blitz applies to itself.
-#
-# The patch is version 0.48.1, so it covers a dependent asking for ^0.48 and not
-# one on ^0.46: that one silently gets a second usvg instead of an error.
-[patch.crates-io]
-usvg = { git = "https://github.com/DioxusLabs/resvg", branch = "devin/1785858271-intrinsic-dimensions" }
