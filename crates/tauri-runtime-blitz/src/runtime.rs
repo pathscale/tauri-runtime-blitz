@@ -899,26 +899,55 @@ impl<T: UserEvent> RuntimeApplication<T> {
             ));
         }
 
+        /*
+         * Paint the whole document, then cut the region out of the buffer.
+         *
+         * `paint_scene` takes offsets, but they move the scene inside a surface
+         * that is still sized to the full viewport, so drawing a 66x64 button
+         * into a 66x64 target put every pixel of it outside the surface and
+         * returned solid black. Cropping afterwards depends on no such
+         * semantics: whatever the renderer drew for the real window is what
+         * gets cut, which is the property this whole call exists to have.
+         */
+        let full_pixel_width = ((f64::from(full_width) * f64::from(scale)).round() as u32).max(1);
+        let full_pixel_height = ((f64::from(full_height) * f64::from(scale)).round() as u32).max(1);
         let mut document = script_document.inner_mut();
-        let mut renderer = anyrender_vello_cpu::VelloCpuImageRenderer::new(width, height);
-        let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+        let mut renderer =
+            anyrender_vello_cpu::VelloCpuImageRenderer::new(full_pixel_width, full_pixel_height);
+        let mut full_rgba =
+            Vec::with_capacity((full_pixel_width as usize) * (full_pixel_height as usize) * 4);
         renderer.render_to_vec(
             |scene| {
                 blitz_paint::paint_scene(
                     scene,
                     &mut document,
                     f64::from(scale),
-                    width,
-                    height,
-                    // Painting is offset by the crop, which is what turns a
-                    // full-document paint into a view of one node without
-                    // laying that node out a second time.
-                    (crop_x * f64::from(scale)).round() as u32,
-                    (crop_y * f64::from(scale)).round() as u32,
+                    full_pixel_width,
+                    full_pixel_height,
+                    0,
+                    0,
                 );
             },
-            &mut rgba,
+            &mut full_rgba,
         );
+
+        // The crop, clamped to the surface: a node partly offscreen yields the
+        // part that exists rather than an error or a panic.
+        let left = ((crop_x * f64::from(scale)).round().max(0.0) as u32).min(full_pixel_width);
+        let top = ((crop_y * f64::from(scale)).round().max(0.0) as u32).min(full_pixel_height);
+        let width = width.min(full_pixel_width.saturating_sub(left)).max(1);
+        let height = height.min(full_pixel_height.saturating_sub(top)).max(1);
+
+        let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+        for row in 0..height {
+            let source = (((top + row) as usize) * (full_pixel_width as usize) + left as usize) * 4;
+            let take = (width as usize) * 4;
+            if source + take <= full_rgba.len() {
+                rgba.extend_from_slice(&full_rgba[source..source + take]);
+            } else {
+                rgba.resize(rgba.len() + take, 0);
+            }
+        }
 
         Ok(blitz_control_protocol::CapturedImage {
             width,
