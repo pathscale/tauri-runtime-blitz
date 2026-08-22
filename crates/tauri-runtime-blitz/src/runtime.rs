@@ -1844,6 +1844,29 @@ fn node_is_visible(document: &blitz_dom::BaseDocument, node_id: blitz_dom::NodeI
         if !node.flags.is_in_document() || node.is_display_none() {
             return false;
         }
+        /*
+         * `visibility: hidden` counts too, not just `display: none`.
+         *
+         * The two are different in layout and identical to a viewer: a hidden
+         * node keeps its box and paints nothing. Reporting it as visible made
+         * an audit of the running application call it a fault, because the box
+         * was there and the pixels were not. Tailwind's `invisible` is exactly
+         * this, and it is how a control that is deliberately dormant - a Stop
+         * button with no run to stop - is expressed.
+         *
+         * `Collapse` is included: on anything that is not a table row it means
+         * the same as `Hidden`, and on a row it removes the row entirely, so
+         * treating it as not-visible is right in both cases.
+         */
+        if node.primary_styles().is_some_and(|style| {
+            use style::computed_values::visibility::T as Visibility;
+            matches!(
+                style.clone_visibility(),
+                Visibility::Hidden | Visibility::Collapse
+            )
+        }) {
+            return false;
+        }
         if let Some(element) = node.element_data()
             && (element_attr(element, "hidden").is_some()
                 || element_attr(element, "aria-hidden") == Some("true"))
