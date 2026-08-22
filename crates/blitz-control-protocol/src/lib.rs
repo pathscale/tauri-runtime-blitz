@@ -92,10 +92,71 @@ pub enum AgentControlRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", content = "params", rename_all = "camelCase")]
 pub enum DiagnosticsRequest {
-    Observe { streams: Vec<DebugStream> },
+    Observe {
+        streams: Vec<DebugStream>,
+    },
     Snapshot(SnapshotRequest),
     Metrics,
     WaitForIdle,
+    /// Render the current document to an RGBA8 image and return the pixels.
+    ///
+    /// The one question the rest of this protocol cannot answer. A snapshot
+    /// reports the boxes and colours the engine *resolved*, which is not the
+    /// same as what it drew: an element can hold a correct box, a correct
+    /// computed colour and an accessible role while painting nothing at all.
+    /// That gap is not hypothetical. An entire icon set rendered blank in a
+    /// shipping application while every snapshot, every layout box and every
+    /// accessibility node read exactly right, and no tool in this protocol
+    /// could see it.
+    ///
+    /// Rendered offscreen rather than read back from the window surface, which
+    /// is deliberate and is what makes this portable: there is no swapchain to
+    /// capture, no compositor to ask, and no display server to require. The
+    /// same call works over SSH, in CI, on a headless Linux box and on Android.
+    Capture(CaptureRequest),
+}
+
+/// What to draw, and how large.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureRequest {
+    /// The subtree to draw, or the whole document when absent.
+    ///
+    /// Capturing one node is the difference between a test that says "the
+    /// window is not blank" and one that says "this button's icon is drawn",
+    /// and the second is the one worth writing.
+    pub node_id: Option<u64>,
+    /// Pixel scale, so a small control can be inspected at a useful size.
+    ///
+    /// A 16px icon is a handful of pixels at 1x, and antialiasing dominates
+    /// them; asking for it at 4x makes "is anything there" answerable without
+    /// making the threshold a guess.
+    pub scale: f32,
+}
+
+impl Default for CaptureRequest {
+    fn default() -> Self {
+        Self {
+            node_id: None,
+            scale: 1.0,
+        }
+    }
+}
+
+/// An RGBA8 image, as the renderer actually drew it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapturedImage {
+    pub width: u32,
+    pub height: u32,
+    /// Row-major RGBA8, four bytes per pixel, base64 over the wire.
+    ///
+    /// Base64 rather than raw bytes because the transport is line-delimited
+    /// JSON, and a full window at 2x is a few megabytes: large enough to be
+    /// worth encoding compactly, not large enough to justify a second channel.
+    pub rgba_base64: String,
+    /// The node this shows, when the request named one.
+    pub node_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -106,6 +167,7 @@ pub enum DebugResponse {
     Snapshot(DebugSnapshot),
     Metrics(RendererMetrics),
     Idle(RevisionSet),
+    Captured(CapturedImage),
     Error(DebugError),
 }
 
@@ -662,6 +724,9 @@ fn response_summary(response: &DebugResponse) -> String {
         DebugResponse::Snapshot(_) => "diagnostic snapshot".into(),
         DebugResponse::Metrics(_) => "renderer metrics".into(),
         DebugResponse::Idle(_) => "renderer idle".into(),
+        DebugResponse::Captured(image) => {
+            format!("captured {}x{} image", image.width, image.height)
+        }
         DebugResponse::Error(error) => error.message.clone(),
     }
 }

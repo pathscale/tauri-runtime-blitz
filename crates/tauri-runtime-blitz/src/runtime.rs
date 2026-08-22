@@ -790,11 +790,142 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 })
                 .map(|snapshot| DebugResponse::Idle(snapshot.revisions))
                 .unwrap_or_else(DebugResponse::Error),
+            DiagnosticsRequest::Capture(request) => self
+                .capture_image(request)
+                .map(DebugResponse::Captured)
+                .unwrap_or_else(DebugResponse::Error),
             DiagnosticsRequest::Observe { .. } => control_error(
                 "streamingUnavailable",
                 "diagnostic subscriptions are not implemented; request snapshots or metrics",
             ),
         }
+    }
+
+    /// Draw the document offscreen and hand back the pixels.
+    ///
+    /// The point of this is that it is the *same* paint. `blitz_paint::paint_scene`
+    /// is the entry point the window renderer uses, so a capture cannot agree
+    /// with a broken frame or disagree with a good one: whatever the window
+    /// would show is what lands in this buffer. Anything less than that is a
+    /// second implementation of the renderer, and a test against a second
+    /// implementation only proves the two implementations match.
+    ///
+    /// A node capture crops rather than re-laying-out. Laying the subtree out in
+    /// isolation would answer a different question - "can this element draw on
+    /// its own" - when the one worth asking is whether it drew *here*, inside
+    /// the page that actually exists, with the styles it actually inherited.
+    #[cfg(all(feature = "diagnostics", unix))]
+    fn capture_image(
+        &mut self,
+        request: blitz_control_protocol::CaptureRequest,
+    ) -> Result<blitz_control_protocol::CapturedImage, DebugError> {
+        use anyrender::ImageRenderer;
+        use base64::Engine as _;
+
+        // Clamped rather than trusted. A scale of zero produces a zero-sized
+        // buffer and a negative one panics inside the rasteriser, and neither
+        // should be reachable from a debug socket.
+        let scale = if request.scale.is_finite() && request.scale > 0.0 {
+            request.scale.clamp(0.1, 8.0)
+        } else {
+            1.0
+        };
+
+        let node_id = request.node_id;
+        let script_document = self
+            .agent_document()
+            .ok_or_else(|| debug_error("documentUnavailable", "no active script document"))?;
+
+        // Style and layout first, so the capture reflects pending mutations
+        // rather than the frame before them. Same call `collect_diagnostics`
+        // makes, for the same reason.
+        script_document.inner_mut().resolve(0.0);
+
+        // Copied out rather than held: the guard is a `Ref` and the borrow has
+        // to end before the mutable one the paint below needs.
+        let (full_width, full_height) = {
+            let inner = script_document.inner();
+            let viewport = inner.viewport();
+            (viewport.window_size.0, viewport.window_size.1)
+        };
+        if full_width == 0 || full_height == 0 {
+            return Err(debug_error(
+                "captureUnavailable",
+                "the document has no viewport to draw",
+            ));
+        }
+
+        // The region to keep, in unscaled document pixels.
+        let (crop_x, crop_y, crop_width, crop_height) = match node_id {
+            None => (
+                0.0_f64,
+                0.0_f64,
+                f64::from(full_width),
+                f64::from(full_height),
+            ),
+            Some(id) => {
+                let inner = script_document.inner();
+                let node = inner
+                    .get_node(NodeId::from_u64(id))
+                    .ok_or_else(|| debug_error("unknownNode", &format!("no node {id}")))?;
+                let layout = node.final_layout();
+                let position = node.absolute_position(0.0, 0.0);
+                if layout.size.width <= 0.0 || layout.size.height <= 0.0 {
+                    return Err(debug_error(
+                        "captureEmpty",
+                        &format!("node {id} has a zero-sized box, so there is nothing to capture"),
+                    ));
+                }
+                let box_ = (
+                    f64::from(position.x),
+                    f64::from(position.y),
+                    f64::from(layout.size.width),
+                    f64::from(layout.size.height),
+                );
+                drop(inner);
+                box_
+            }
+        };
+
+        let width = ((crop_width * f64::from(scale)).round() as u32).max(1);
+        let height = ((crop_height * f64::from(scale)).round() as u32).max(1);
+        // A whole window at 8x is gigabytes; refuse rather than exhaust memory
+        // on a machine that is probably already running the app under test.
+        const MAX_PIXELS: u64 = 64 * 1024 * 1024;
+        if u64::from(width) * u64::from(height) > MAX_PIXELS {
+            return Err(debug_error(
+                "captureTooLarge",
+                &format!("{width}x{height} exceeds the capture ceiling; lower the scale"),
+            ));
+        }
+
+        let mut document = script_document.inner_mut();
+        let mut renderer = anyrender_vello_cpu::VelloCpuImageRenderer::new(width, height);
+        let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+        renderer.render_to_vec(
+            |scene| {
+                blitz_paint::paint_scene(
+                    scene,
+                    &mut document,
+                    f64::from(scale),
+                    width,
+                    height,
+                    // Painting is offset by the crop, which is what turns a
+                    // full-document paint into a view of one node without
+                    // laying that node out a second time.
+                    (crop_x * f64::from(scale)).round() as u32,
+                    (crop_y * f64::from(scale)).round() as u32,
+                );
+            },
+            &mut rgba,
+        );
+
+        Ok(blitz_control_protocol::CapturedImage {
+            width,
+            height,
+            rgba_base64: base64::engine::general_purpose::STANDARD.encode(&rgba),
+            node_id,
+        })
     }
 
     #[cfg(all(feature = "diagnostics", unix))]
@@ -1899,61 +2030,58 @@ fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
     } else {
         VelloWindowRenderer::new()
     };
-    let window = BlitzShellWindowConfig::with_attributes(
-        Box::new(prepared.document),
-        renderer,
-        attributes,
-    )
-    .with_on_created(move |native| {
-        /*
-         * The attributes above were snapshotted at registration, but the native
-         * window is not created until the event loop can make surfaces, and
-         * Tauri's `setup` runs in between. A `show()` in there reaches the
-         * config and finds no native window to forward to, so replaying the
-         * current visibility here is what makes it take effect. Without this a
-         * window configured `visible: false` and shown once the app is ready,
-         * which is the standard way to hide a slow boot, stays hidden forever.
-         */
-        let visible = state_for_creation.config.lock().unwrap().visible;
-        native.set_visible(visible);
-        // Glass rides on the same flag as transparency, because it is the same
-        // decision: an opaque window has nothing behind it to show. Applied
-        // here rather than from the attributes, because the effect view is
-        // attached to a native window that does not exist until now.
-        #[cfg(target_os = "macos")]
-        {
-            // Kept regardless of the transparent flag: the stylesheet may ask
-            // for glass later, and by then this callback is long gone.
-            let slot = GLASS_WINDOW.get_or_init(|| Mutex::new(None));
-            if let Ok(mut guard) = slot.lock() {
-                *guard = Some(Arc::clone(&native));
-            }
-            /*
-             * Deliberately not applied here, transparent or not.
-             *
-             * `apply_liquid_glass` does not put a blurred layer behind the
-             * window: `window_vibrancy` moves the renderer's content view
-             * *inside* the `NSGlassEffectView`, and that view blurs its
-             * subviews, so the whole application is frosted, text included.
-             * A transparent window is therefore not on its own a reason to
-             * attach it.
-             *
-             * Doing it at creation also cost a visible flash. The app asks for
-             * the chrome it wants once the stylesheet is up, so a window that
-             * did not want glass was frosted for the half second until that
-             * call cleared it, and clearing tears the content view out of the
-             * hierarchy and puts it back.
-             *
-             * `set_window_glass` remains the way in, and the handle above is
-             * what makes it reachable.
-             */
-        }
-        *state_for_creation.native.lock().unwrap() = Some(native);
-        if let Some(callback) = after_window_creation {
-            let marker = PhantomData;
-            callback(RawWindow { _marker: &marker });
-        }
-    });
+    let window =
+        BlitzShellWindowConfig::with_attributes(Box::new(prepared.document), renderer, attributes)
+            .with_on_created(move |native| {
+                /*
+                 * The attributes above were snapshotted at registration, but the native
+                 * window is not created until the event loop can make surfaces, and
+                 * Tauri's `setup` runs in between. A `show()` in there reaches the
+                 * config and finds no native window to forward to, so replaying the
+                 * current visibility here is what makes it take effect. Without this a
+                 * window configured `visible: false` and shown once the app is ready,
+                 * which is the standard way to hide a slow boot, stays hidden forever.
+                 */
+                let visible = state_for_creation.config.lock().unwrap().visible;
+                native.set_visible(visible);
+                // Glass rides on the same flag as transparency, because it is the same
+                // decision: an opaque window has nothing behind it to show. Applied
+                // here rather than from the attributes, because the effect view is
+                // attached to a native window that does not exist until now.
+                #[cfg(target_os = "macos")]
+                {
+                    // Kept regardless of the transparent flag: the stylesheet may ask
+                    // for glass later, and by then this callback is long gone.
+                    let slot = GLASS_WINDOW.get_or_init(|| Mutex::new(None));
+                    if let Ok(mut guard) = slot.lock() {
+                        *guard = Some(Arc::clone(&native));
+                    }
+                    /*
+                     * Deliberately not applied here, transparent or not.
+                     *
+                     * `apply_liquid_glass` does not put a blurred layer behind the
+                     * window: `window_vibrancy` moves the renderer's content view
+                     * *inside* the `NSGlassEffectView`, and that view blurs its
+                     * subviews, so the whole application is frosted, text included.
+                     * A transparent window is therefore not on its own a reason to
+                     * attach it.
+                     *
+                     * Doing it at creation also cost a visible flash. The app asks for
+                     * the chrome it wants once the stylesheet is up, so a window that
+                     * did not want glass was frosted for the half second until that
+                     * call cleared it, and clearing tears the content view out of the
+                     * hierarchy and puts it back.
+                     *
+                     * `set_window_glass` remains the way in, and the handle above is
+                     * what makes it reachable.
+                     */
+                }
+                *state_for_creation.native.lock().unwrap() = Some(native);
+                if let Some(callback) = after_window_creation {
+                    let marker = PhantomData;
+                    callback(RawWindow { _marker: &marker });
+                }
+            });
     application.add_window(window);
     runtime_trace("native window queued");
 
@@ -2017,8 +2145,9 @@ static GLASS_WINDOW: std::sync::OnceLock<Mutex<Option<Arc<dyn winit::window::Win
 /// across to AppKit, so the chrome and the page cannot drift apart.
 #[cfg(target_os = "macos")]
 pub fn set_window_glass(tint: Option<(u8, u8, u8, u8)>, radius: Option<f64>, enabled: bool) {
-    use window_vibrancy::{LiquidGlassOptions, NSGlassEffectViewStyle, apply_liquid_glass,
-        clear_liquid_glass};
+    use window_vibrancy::{
+        LiquidGlassOptions, NSGlassEffectViewStyle, apply_liquid_glass, clear_liquid_glass,
+    };
 
     // Asking for the state the window is already in has to be free, because
     // doing the work again is not harmless. `clear_liquid_glass` calls
@@ -2221,8 +2350,7 @@ fn detach_window_backdrop(window: &dyn winit::window::Window) {
     // Identifier rather than type, so a glass view some other code owns is not
     // torn out from under it.
     for view in container.subviews().iter() {
-        let matches = unsafe { view.identifier() }
-            .is_some_and(|id| id.to_string() == BACKDROP_ID);
+        let matches = unsafe { view.identifier() }.is_some_and(|id| id.to_string() == BACKDROP_ID);
         if matches {
             view.removeFromSuperview();
         }
