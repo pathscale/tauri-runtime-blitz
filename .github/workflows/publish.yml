@@ -2,7 +2,11 @@ name: Publish crates
 
 on:
   push:
-    tags: ['v*.*.*']
+    branches: [master]
+    paths:
+      - Cargo.toml
+      - crates/blitz-control-protocol/Cargo.toml
+      - crates/tauri-runtime-blitz/Cargo.toml
   workflow_dispatch:
     inputs:
       version:
@@ -34,14 +38,13 @@ jobs:
       - name: Verify requested version
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
-          RELEASE_REF: ${{ github.ref_name }}
           RELEASE_KIND: ${{ github.event_name }}
         run: |
           workspace_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
-          if [ "$RELEASE_KIND" = push ]; then
-            requested="${RELEASE_REF#v}"
-          else
+          if [ "$RELEASE_KIND" = workflow_dispatch ]; then
             requested="$REQUESTED_VERSION"
+          else
+            requested="$workspace_version"
           fi
           if [ "$requested" != "$workspace_version" ]; then
             echo "requested $requested but workspace is $workspace_version" >&2
@@ -49,10 +52,10 @@ jobs:
           fi
 
       - name: Verify packages
-        run: cargo package -p blitz-control-protocol --locked
+        run: cargo package -p blitz-control-protocol
 
       - name: Publish protocol
-        run: cargo publish -p blitz-control-protocol --locked
+        run: cargo publish -p blitz-control-protocol
 
       - name: Wait for protocol index
         run: |
@@ -68,5 +71,5 @@ jobs:
 
       - name: Publish runtime
         run: |
-          cargo package -p tauri-runtime-blitz --locked
-          cargo publish -p tauri-runtime-blitz --locked
+          cargo package -p tauri-runtime-blitz
+          cargo publish -p tauri-runtime-blitz
