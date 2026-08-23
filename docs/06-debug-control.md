@@ -72,7 +72,7 @@ Minimum commands:
 - find one or many elements by CSS selector
 - element text, attribute, property, rectangle, displayed state, and enabled state
 - element click, focus, and keyboard input
-- pointer and keyboard actions needed by AgencyZero
+- semantic pointer and keyboard actions
 - synchronous and asynchronous JavaScript execution
 - screenshot
 - window handles, current window, and window selection

@@ -23,12 +23,12 @@ tauri_runtime_blitz::apply_runtime_debug_options(
 )?;
 ```
 
-AgencyZero and Chuzz should each own only the UI, persistence, and their local
-socket lifecycle for those two booleans. They must not reproduce the dependency
+Each embedder owns only the UI, persistence, and its local socket lifecycle for
+those two booleans. Embedders must not reproduce the dependency
 rule. `DebugOptions::effective_deep_profiling` guarantees that collection is
 ineffective when inspection/control is off. `apply_runtime_debug_options` also
-clears retained samples whenever profiling stops in a Tauri embedder; Chuzz's
-equivalent application boundary must do the same for the collectors it uses.
+clears retained samples whenever profiling stops; non-Tauri boundaries must do
+the same for the collectors they use.
 
 ## Build and runtime contract
 
@@ -50,7 +50,7 @@ equivalent application boundary must do the same for the collectors it uses.
 
 ## Embedder checklist
 
-AgencyZero, Chuzz, and future embedders should all:
+Every embedder should:
 
 1. Persist two booleans in the application's ordinary settings store. This is
    application configuration, not a WorkTable/schema field.

@@ -169,8 +169,8 @@ fn diagnostic_layout_row(
     // zoom factor. Under zoom that makes every scroller read as overscrolled,
     // and it is not only a reading error: a consumer testing
     // `scrollOffset < scrollSize - clientSize` for "is there more to scroll"
-    // gets a false negative at the true end. AgencyZero's tab strip disabled
-    // its right chevron that way, with the new-tab button still off screen.
+    // gets a false negative at the true end, leaving an overflow control
+    // disabled while content remains off screen.
     //
     // Unzoomed is the right side to land on because it is what the DOM already
     // reports: `blitz-script`'s `scrollLeft`/`scrollTop` unzoom before
@@ -2592,7 +2592,7 @@ mod tests {
     #[test]
     fn window_attributes_preserve_initial_native_configuration() {
         let mut builder = BlitzWindowBuilder::new();
-        builder.config.title = "AgencyZero".into();
+        builder.config.title = "Example application".into();
         builder.config.width = 1344.0;
         builder.config.height = 900.0;
         builder.config.min_width = Some(960.0);
@@ -2601,7 +2601,7 @@ mod tests {
         builder.config.decorations = false;
 
         let attributes = window_attributes(&builder);
-        assert_eq!(attributes.title, "AgencyZero");
+        assert_eq!(attributes.title, "Example application");
         assert_eq!(
             attributes.surface_size,
             Some(LogicalSize::new(1344.0, 900.0).into())
@@ -2851,10 +2851,10 @@ mod tests {
     #[cfg(all(feature = "agent-control", target_os = "macos"))]
     #[test]
     fn relaunch_uses_the_app_bundle_instead_of_the_inner_macos_binary() {
-        let executable = std::path::Path::new("/Applications/AgencyZero.app/Contents/MacOS/az-gui");
+        let executable = std::path::Path::new("/Applications/Example.app/Contents/MacOS/example");
         assert_eq!(
             containing_app_bundle(executable).as_deref(),
-            Some(std::path::Path::new("/Applications/AgencyZero.app"))
+            Some(std::path::Path::new("/Applications/Example.app"))
         );
     }
 }
