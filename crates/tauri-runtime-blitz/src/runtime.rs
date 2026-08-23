@@ -1543,10 +1543,20 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
                 let _ = control_context.send(RuntimeMessage::Control { request, response });
                 receiver
             });
-            let runtime = Arc::new(Mutex::new(AgentControlRuntime {
-                bridge,
-                server: None,
-            }));
+            // The embedder's Settings state is applied later during Tauri
+            // setup. This enable-only rescue must start earlier: when control
+            // was switched off, setup is unreachable to the very automation
+            // needed to switch it back on. It also lets QA attach while a large
+            // application is still booting.
+            let server = if std::env::args().any(|arg| arg == "--blitz-control") {
+                Some(
+                    AgentControlServer::start(bridge.clone())
+                        .map_err(|error| Error::CreateWebview(Box::new(error)))?,
+                )
+            } else {
+                None
+            };
+            let runtime = Arc::new(Mutex::new(AgentControlRuntime { bridge, server }));
             *AGENT_CONTROL_RUNTIME
                 .get_or_init(|| Mutex::new(None))
                 .lock()
