@@ -85,15 +85,15 @@ telemetry unless the second setting is explicitly on.
    event path. Relaunch uses LaunchServices
    for a macOS app bundle (and the current executable elsewhere), then exits the
    old instance cleanly. An embedder that registers an agent-control handler owns
-   the relaunch lifecycle instead; this lets AgencyZero drain state and delegate
-   replacement to its restart Angel. Diagnostic snapshots, idle barriers,
+   the relaunch lifecycle instead; this lets an application drain state and
+   delegate replacement to its own supervisor. Diagnostic snapshots, idle barriers,
    computed styles, frame capture and metrics are connected.
 4. Renderer instrumentation and pushed metrics/errors. Implemented for the
    current bounded streams and frame windows.
 5. WebDriver compatibility adapter backed by the endpoint protocol; delete the
    old bespoke server after its acceptance suite passes unchanged.
 
-The live AgencyZero audit that defined this contract found the old layer could
+The live consumer audit that defined this contract found the old layer could
 not inject Command-modified keys or wheel input, treated descendants of
 `display:none` retained views as displayed, exposed revision counters without
 real timings, allowed only one session, and lost its environment during an

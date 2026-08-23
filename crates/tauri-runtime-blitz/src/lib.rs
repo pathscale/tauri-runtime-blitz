@@ -284,37 +284,3 @@ impl WindowBuilder for BlitzWindowBuilder {
         self
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn preserves_agencyzero_window_attributes() {
-        let config = WindowConfig {
-            title: "AgencyZero".into(),
-            width: 1344.0,
-            height: 900.0,
-            min_width: Some(960.0),
-            min_height: Some(640.0),
-            resizable: true,
-            visible: false,
-            hidden_title: true,
-            title_bar_style: TitleBarStyle::Overlay,
-            ..Default::default()
-        };
-
-        let builder = BlitzWindowBuilder::with_config(&config);
-        assert_eq!(builder.config.title, "AgencyZero");
-        assert_eq!(
-            (builder.config.width, builder.config.height),
-            (1344.0, 900.0)
-        );
-        assert_eq!(builder.config.min_width, Some(960.0));
-        assert_eq!(builder.config.min_height, Some(640.0));
-        assert!(builder.config.resizable);
-        assert!(!builder.config.visible);
-        assert!(builder.config.hidden_title);
-        assert_eq!(builder.config.title_bar_style, TitleBarStyle::Overlay);
-    }
-}
