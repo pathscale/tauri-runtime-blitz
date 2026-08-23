@@ -208,7 +208,21 @@ pub struct SnapshotRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", content = "params", rename_all = "camelCase")]
 pub enum AgentAction {
+    /// Activate one semantic node without resolving it back through screen
+    /// coordinates. The runtime dispatches pointer, mouse and click events in
+    /// browser order directly to this target.
     Click {
+        node_id: u64,
+    },
+    /// Two activations in one runtime call, inside the platform's double-click
+    /// interval. Used for rows whose single click only selects or folds them.
+    DoubleClick {
+        node_id: u64,
+    },
+    /// Present one semantic node as hovered. The target is still named by id;
+    /// the runtime owns any renderer-specific positioning needed to update CSS
+    /// hover state.
+    Hover {
         node_id: u64,
     },
     SetValue {
@@ -917,6 +931,22 @@ mod tests {
             decode_agent_request(encode_agent_request(id.clone(), &request).unwrap()).unwrap(),
             (id, request)
         );
+    }
+
+    #[test]
+    fn node_addressed_actions_round_trip() {
+        for action in [
+            AgentAction::Click { node_id: 9 },
+            AgentAction::DoubleClick { node_id: 10 },
+            AgentAction::Hover { node_id: 11 },
+        ] {
+            let request = AgentControlRequest::Act(action);
+            let id = JsonRpcId::Number(8);
+            assert_eq!(
+                decode_agent_request(encode_agent_request(id.clone(), &request).unwrap()).unwrap(),
+                (id, request)
+            );
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

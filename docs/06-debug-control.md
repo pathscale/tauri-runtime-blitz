@@ -81,9 +81,10 @@ Element references contain both the Blitz node ID and a document generation. Rem
 replacing the node makes the reference stale. Never silently retarget a stale reference to a
 new node that reused the same numeric ID.
 
-Clicks and keys must enter through Blitz's real hit-testing and input/event path. Calling the
-JavaScript `element.click()` method would hide precisely the propagation bugs this channel is
-supposed to diagnose.
+Clicks and keys must enter through Blitz's input/event path. A semantic click is addressed by
+node id and dispatches pointer-down, mouse-down, pointer-up, mouse-up and click to that target;
+it neither calls JavaScript `element.click()` nor asks coordinate hit-testing to choose the node
+again. That preserves propagation bugs while making overflowed controls addressable.
 
 ## Blitz diagnostic extensions
 
