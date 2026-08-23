@@ -561,7 +561,10 @@ impl<T: UserEvent> RuntimeHandle<T> for BlitzRuntimeHandle<T> {
     }
 
     fn request_exit(&self, code: i32) -> tauri_runtime::Result<()> {
-        self.context.send(RuntimeMessage::RequestExit(code))
+        runtime_trace("runtime exit requested");
+        let result = self.context.send(RuntimeMessage::RequestExit(code));
+        runtime_trace("runtime exit request enqueued");
+        result
     }
 
     fn create_window<F: Fn(RawWindow) + Send + 'static>(
@@ -1332,12 +1335,14 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 RuntimeMessage::Task(task) => task(),
                 RuntimeMessage::UserEvent(event) => self.emit(RunEvent::UserEvent(event)),
                 RuntimeMessage::RequestExit(code) => {
+                    runtime_trace("runtime exit request draining");
                     self.emit(RunEvent::ExitRequested {
                         code: Some(code),
                         tx: channel().0,
                     });
                     self.emit(RunEvent::Exit);
                     event_loop.exit();
+                    runtime_trace("native event loop exit flagged");
                 }
                 #[cfg(all(feature = "agent-control", unix))]
                 RuntimeMessage::Control { request, response } => {
@@ -1464,8 +1469,14 @@ impl<T: UserEvent> ApplicationHandler for RuntimeApplication<T> {
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
-        self.blitz.get_mut().proxy_wake_up(event_loop);
+        // Embedder messages own the runtime lifecycle, so they run before
+        // renderer wake work. In particular an exit request must not return to
+        // AppKit's wait loop after a renderer callback consumed the wake.
         self.drain_runtime_messages(event_loop);
+        if event_loop.exiting() {
+            return;
+        }
+        self.blitz.get_mut().proxy_wake_up(event_loop);
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -1562,7 +1573,9 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
                 .unwrap() = Some(Arc::downgrade(&runtime));
             runtime
         };
-        let mut blitz = BlitzApplication::new(proxy, blitz_receiver);
+        let blitz = BlitzApplication::new(proxy, blitz_receiver);
+        #[cfg(feature = "debug-control")]
+        let mut blitz = blitz;
         #[cfg(feature = "debug-control")]
         if let Some(mut controller) =
             blitz_script::DebugController::start_from_env(env!("CARGO_PKG_VERSION"))
