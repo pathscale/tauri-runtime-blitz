@@ -184,9 +184,8 @@ fn diagnostic_layout_row(
     // `overflow-y:auto` element leaves `scroll_height()` at 0 while `zoom` on
     // its child does not reach the scroller's own styles — so a test asserting
     // the relation either holds vacuously (0 == 0) or fails its own setup.
-    // Verified against a running instance instead: the tab strip reported
-    // scroll=489.0 against client=862.1 / content=1283.6, where the true slack
-    // is 421.5 and 489 is that same distance zoomed.
+    // Verified against a zoomed live scroller where the raw offset exceeded
+    // the unzoomed range by exactly the zoom factor.
     let scroll_offset = dom_node.scroll_offset();
     Some(serde_json::json!({
         "nodeId": node.id,
@@ -1318,8 +1317,8 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 // A wheel event targets the hovered node, and hover is resolved
                 // by the shell from real cursor movement. An injected pointer
                 // move never touches it, so an injected wheel had no target and
-                // scrolled nothing: driving a panel from outside the app looked
-                // like the panel refusing to scroll, and cost most of a session.
+                // scrolled nothing, making remote wheel input look accepted
+                // while the document remained unchanged.
                 document.inner_mut().set_hover_to(hover_at.0, hover_at.1);
                 document.handle_ui_event(UiEvent::Wheel(event));
             }
@@ -1543,7 +1542,7 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
                 let _ = control_context.send(RuntimeMessage::Control { request, response });
                 receiver
             });
-            // The embedder's Settings state is applied later during Tauri
+            // The embedder's persisted control state is applied later during Tauri
             // setup. This enable-only rescue must start earlier: when control
             // was switched off, setup is unreachable to the very automation
             // needed to switch it back on. It also lets QA attach while a large
@@ -2160,37 +2159,15 @@ fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
                  */
                 let visible = state_for_creation.config.lock().unwrap().visible;
                 native.set_visible(visible);
-                // Glass rides on the same flag as transparency, because it is the same
-                // decision: an opaque window has nothing behind it to show. Applied
-                // here rather than from the attributes, because the effect view is
-                // attached to a native window that does not exist until now.
                 #[cfg(target_os = "macos")]
                 {
-                    // Kept regardless of the transparent flag: the stylesheet may ask
-                    // for glass later, and by then this callback is long gone.
-                    let slot = GLASS_WINDOW.get_or_init(|| Mutex::new(None));
+                    // A small generic escape hatch for platform integrations owned by
+                    // the embedder. TRB stores the native window; it does not know what
+                    // effect or application policy the callback applies.
+                    let slot = NATIVE_WINDOW.get_or_init(|| Mutex::new(None));
                     if let Ok(mut guard) = slot.lock() {
                         *guard = Some(Arc::clone(&native));
                     }
-                    /*
-                     * Deliberately not applied here, transparent or not.
-                     *
-                     * `apply_liquid_glass` does not put a blurred layer behind the
-                     * window: `window_vibrancy` moves the renderer's content view
-                     * *inside* the `NSGlassEffectView`, and that view blurs its
-                     * subviews, so the whole application is frosted, text included.
-                     * A transparent window is therefore not on its own a reason to
-                     * attach it.
-                     *
-                     * Doing it at creation also cost a visible flash. The app asks for
-                     * the chrome it wants once the stylesheet is up, so a window that
-                     * did not want glass was frosted for the half second until that
-                     * call cleared it, and clearing tears the content view out of the
-                     * hierarchy and puts it back.
-                     *
-                     * `set_window_glass` remains the way in, and the handle above is
-                     * what makes it reachable.
-                     */
                 }
                 *state_for_creation.native.lock().unwrap() = Some(native);
                 if let Some(callback) = after_window_creation {
@@ -2216,283 +2193,27 @@ fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
     })
 }
 
-/// Put a Liquid Glass backdrop behind the window's contents.
-///
-/// macOS 26 has `NSGlassEffectView`; everything older gets the vibrancy view it
-/// grew out of, which is why the fallback is a version error and not a failure.
-/// Neither is fatal: a window without a backdrop is a plain window, and refusing
-/// to finish creating it over a missing effect would cost the whole app.
-///
-/// Cost note, since this sits next to the render path: the calls here happen
-/// once, and `objc2` bindings lower to a direct `objc_msgSend`, so the binding
-/// layers are free. What is not free is the effect itself — the compositor
-/// samples and blurs what is behind the window every frame it is visible, and a
-/// non-opaque window gives up the opaque fast path. Measure that with
-/// `BLITZ_PHASE_TIMES`, not by reasoning about the Rust.
-/// The glass configuration the window is already in.
-///
-/// Applying is not idempotent at the AppKit level, so the only safe way to make
-/// a repeated request harmless is to not make it. See `set_window_glass`.
 #[cfg(target_os = "macos")]
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct AppliedGlass {
-    tint: Option<(u8, u8, u8, u8)>,
-    /// Bits, because `f64` is not `Eq` and this is only ever compared.
-    radius: Option<u64>,
-    enabled: bool,
-}
-
-#[cfg(target_os = "macos")]
-static APPLIED_GLASS: std::sync::OnceLock<Mutex<Option<AppliedGlass>>> = std::sync::OnceLock::new();
-
-/// The native window, kept so its chrome can be restyled after creation.
-///
-/// The theme lives in CSS and changes while the app runs, but the glass view is
-/// an AppKit object created once. Without a handle there is nowhere to send a
-/// colour the stylesheet just changed.
-#[cfg(target_os = "macos")]
-static GLASS_WINDOW: std::sync::OnceLock<Mutex<Option<Arc<dyn winit::window::Window>>>> =
+static NATIVE_WINDOW: std::sync::OnceLock<Mutex<Option<Arc<dyn winit::window::Window>>>> =
     std::sync::OnceLock::new();
 
-/// Restyle the window's glass from values the stylesheet owns.
+/// Run an embedder-owned macOS integration against the native window.
 ///
-/// `tint` is straight sRGB with alpha, as read from a computed style; `radius`
-/// is in points. Both are the CSS side's to decide — this only carries them
-/// across to AppKit, so the chrome and the page cannot drift apart.
+/// TRB deliberately exposes the window without interpreting the callback. App
+/// chrome, platform effects, and their dependencies remain in the application.
 #[cfg(target_os = "macos")]
-pub fn set_window_glass(tint: Option<(u8, u8, u8, u8)>, radius: Option<f64>, enabled: bool) {
-    use window_vibrancy::{
-        LiquidGlassOptions, NSGlassEffectViewStyle, apply_liquid_glass, clear_liquid_glass,
-    };
-
-    // Asking for the state the window is already in has to be free, because
-    // doing the work again is not harmless. `clear_liquid_glass` calls
-    // `restore_primary_content_view`, which removes the renderer's own content
-    // view from its superview and adds it back, and `apply_liquid_glass` moves
-    // it a second time. So a repeat call tears the surface out of the view
-    // hierarchy and rebuilds it, and the window is blank from then until
-    // something forces a full repaint: a scroll, usually, which is how this
-    // showed up. Dragging a slider in Settings is enough to trigger it, because
-    // every settled value writes settings and the settings broadcast asks for
-    // the chrome again.
-    //
-    // Compared by bits rather than value so the memo works for `f64`; the
-    // radius is either a copy of a number that was already sent or `None`, so
-    // there is no arithmetic in between to make two equal values differ.
-    let wanted = AppliedGlass {
-        tint,
-        radius: radius.map(f64::to_bits),
-        enabled,
-    };
-    let Some(memo) = APPLIED_GLASS.get_or_init(|| Mutex::new(None)).lock().ok() else {
-        return;
-    };
-    let mut memo = memo;
-    if *memo == Some(wanted) {
-        return;
-    }
-
-    let Some(slot) = GLASS_WINDOW.get() else {
-        return;
+pub(crate) fn with_native_window(callback: impl FnOnce(&dyn winit::window::Window)) -> bool {
+    let Some(slot) = NATIVE_WINDOW.get() else {
+        return false;
     };
     let Ok(guard) = slot.lock() else {
-        return;
+        return false;
     };
     let Some(window) = guard.as_ref() else {
-        return;
-    };
-    let window = window.as_ref();
-    *memo = Some(wanted);
-
-    if !enabled {
-        detach_window_backdrop(window);
-        let _ = clear_liquid_glass(window);
-        runtime_trace("window glass cleared");
-        return;
-    }
-
-    /*
-     * The backdrop goes behind the content, which is the whole point.
-     *
-     * `apply_liquid_glass` is not used for this: it inserts its glass view as a
-     * subview of the renderer's own view, so the glass ends up on top of
-     * everything drawn and frosts the application rather than backing it. Only
-     * the pre-macOS-26 fallback below still goes through the crate, because a
-     * vibrancy material is the thing being asked for there.
-     */
-    if attach_window_backdrop(window, tint, radius) {
-        return;
-    }
-
-    // Cleared first: applying over an existing view stacks a second one, and
-    // the tint of the pair is not the tint that was asked for.
-    let _ = clear_liquid_glass(window);
-
-    let mut options = LiquidGlassOptions::new(NSGlassEffectViewStyle::Regular);
-    if let Some(tint) = tint {
-        options = options.tint_color(tint);
-    }
-    // `apply_window_glass` carries the pre-macOS-26 vibrancy fallback, and this
-    // is now the only caller, so the styled path has to keep reaching it when
-    // liquid glass is unavailable rather than silently applying nothing.
-    if let Some(radius) = radius {
-        options = options.radius(radius);
-    }
-    match apply_liquid_glass(window, options) {
-        Ok(()) => runtime_trace("window glass restyled from the stylesheet"),
-        Err(window_vibrancy::Error::UnsupportedPlatformVersion(_)) => {
-            apply_window_glass(window);
-        }
-        Err(error) => runtime_trace(&format!("could not restyle window glass: {error}")),
-    }
-}
-
-/// Put a blurred backdrop *behind* the window's content.
-///
-/// # Why this is not `window_vibrancy::apply_liquid_glass`
-///
-/// That function takes the view from the window handle, which is the renderer's
-/// own view, and inserts its `NSGlassEffectView` as a subview of it sized to its
-/// bounds. The glass therefore sits inside and on top of everything the renderer
-/// draws, and `NSGlassEffectView` blurs what is behind it, so the result is the
-/// whole application frosted: text, controls, every pixel. That is what shipped
-/// once and had to be reverted.
-///
-/// A window backdrop is a sibling, not a parent and not a child. The glass goes
-/// into the window's `contentView` *below* the renderer's view, so it blurs the
-/// desktop showing through a transparent window and the content draws over it
-/// untouched.
-///
-/// Returns whether the backdrop was attached, so the caller can fall back.
-#[cfg(target_os = "macos")]
-fn attach_window_backdrop(
-    window: &dyn winit::window::Window,
-    tint: Option<(u8, u8, u8, u8)>,
-    radius: Option<f64>,
-) -> bool {
-    use objc2::rc::Retained;
-    use objc2_app_kit::{
-        NSAutoresizingMaskOptions, NSColor, NSGlassEffectView, NSGlassEffectViewStyle,
-        NSUserInterfaceItemIdentification, NSView, NSWindowOrderingMode,
-    };
-    use objc2_foundation::MainThreadMarker;
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
-    let Some(mtm) = MainThreadMarker::new() else {
-        runtime_trace("window backdrop needs the main thread");
         return false;
     };
-
-    let Ok(handle) = window.window_handle() else {
-        return false;
-    };
-    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
-        return false;
-    };
-
-    // The renderer's view. Its superview is the window's content view, which is
-    // where a sibling has to go.
-    let content = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
-    let superview = unsafe { content.superview() };
-    let Some(container) = superview else {
-        runtime_trace("window backdrop: the renderer's view has no superview yet");
-        return false;
-    };
-
-    // Replacing rather than stacking: applying twice would tint through two
-    // views and the pair is not the colour that was asked for.
-    detach_window_backdrop(window);
-
-    let bounds = container.bounds();
-    let glass: Retained<NSGlassEffectView> = NSGlassEffectView::initWithFrame(mtm.alloc(), bounds);
-
-    glass.setStyle(NSGlassEffectViewStyle::Regular);
-    if let Some(radius) = radius {
-        glass.setCornerRadius(radius);
-    }
-    if let Some((r, g, b, a)) = tint {
-        let color = NSColor::colorWithRed_green_blue_alpha(
-            f64::from(r) / 255.0,
-            f64::from(g) / 255.0,
-            f64::from(b) / 255.0,
-            f64::from(a) / 255.0,
-        );
-        glass.setTintColor(Some(&color));
-    }
-    glass.setAutoresizingMask(
-        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
-    );
-    glass.setIdentifier(Some(&objc2_foundation::NSString::from_str(BACKDROP_ID)));
-
-    // Below the renderer's view, so the content is drawn over the blur rather
-    // than through it.
-    container.addSubview_positioned_relativeTo(&glass, NSWindowOrderingMode::Below, Some(content));
-
-    runtime_trace("window backdrop attached behind the content");
+    callback(window.as_ref());
     true
-}
-
-/// The identifier the backdrop is tagged with, so it can be found again.
-#[cfg(target_os = "macos")]
-const BACKDROP_ID: &str = "az-window-backdrop";
-
-/// Remove a backdrop this module attached, leaving any other view alone.
-#[cfg(target_os = "macos")]
-fn detach_window_backdrop(window: &dyn winit::window::Window) {
-    use objc2_app_kit::{NSUserInterfaceItemIdentification, NSView};
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
-    let Ok(handle) = window.window_handle() else {
-        return;
-    };
-    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
-        return;
-    };
-    let content = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
-    let superview = unsafe { content.superview() };
-    let Some(container) = superview else {
-        return;
-    };
-
-    // Identifier rather than type, so a glass view some other code owns is not
-    // torn out from under it.
-    for view in container.subviews().iter() {
-        let matches = view
-            .identifier()
-            .is_some_and(|id| id.to_string() == BACKDROP_ID);
-        if matches {
-            view.removeFromSuperview();
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn apply_window_glass(window: &dyn winit::window::Window) {
-    use window_vibrancy::{
-        LiquidGlassOptions, NSGlassEffectViewStyle, NSVisualEffectMaterial, apply_liquid_glass,
-        apply_vibrancy,
-    };
-
-    let options = LiquidGlassOptions::new(NSGlassEffectViewStyle::Regular);
-    match apply_liquid_glass(window, options) {
-        Ok(()) => runtime_trace("liquid glass applied"),
-        Err(window_vibrancy::Error::UnsupportedPlatformVersion(_)) => {
-            // Pre-26. `UnderWindowBackground` is the material meant for a whole
-            // window's backdrop rather than a panel inside one.
-            match apply_vibrancy(
-                window,
-                NSVisualEffectMaterial::UnderWindowBackground,
-                None,
-                None,
-            ) {
-                Ok(()) => runtime_trace("liquid glass unavailable; applied vibrancy instead"),
-                Err(error) => {
-                    runtime_trace(&format!("no window backdrop applied: {error}"));
-                }
-            }
-        }
-        Err(error) => runtime_trace(&format!("no window backdrop applied: {error}")),
-    }
 }
 
 fn window_attributes(builder: &BlitzWindowBuilder) -> WindowAttributes {
@@ -2582,10 +2303,10 @@ mod tests {
             ))
         });
 
-        let document = create_document("tauri://localhost/settings").unwrap();
+        let document = create_document("tauri://localhost/view").unwrap();
         assert_eq!(
             document.current_url().map(url::Url::as_str),
-            Some("tauri://localhost/settings")
+            Some("tauri://localhost/view")
         );
     }
 
@@ -2593,10 +2314,10 @@ mod tests {
     fn window_attributes_preserve_initial_native_configuration() {
         let mut builder = BlitzWindowBuilder::new();
         builder.config.title = "Example application".into();
-        builder.config.width = 1344.0;
-        builder.config.height = 900.0;
-        builder.config.min_width = Some(960.0);
-        builder.config.min_height = Some(640.0);
+        builder.config.width = 640.0;
+        builder.config.height = 480.0;
+        builder.config.min_width = Some(320.0);
+        builder.config.min_height = Some(240.0);
         builder.config.visible = false;
         builder.config.decorations = false;
 
@@ -2604,11 +2325,11 @@ mod tests {
         assert_eq!(attributes.title, "Example application");
         assert_eq!(
             attributes.surface_size,
-            Some(LogicalSize::new(1344.0, 900.0).into())
+            Some(LogicalSize::new(640.0, 480.0).into())
         );
         assert_eq!(
             attributes.min_surface_size,
-            Some(LogicalSize::new(960.0, 640.0).into())
+            Some(LogicalSize::new(320.0, 240.0).into())
         );
         assert!(!attributes.visible);
         assert!(!attributes.decorations);
@@ -2721,23 +2442,23 @@ mod tests {
     #[test]
     fn diagnostic_layout_reports_scroll_state_without_script_evaluation() {
         let mut document = ScriptDocument::from_html(
-            "<section id='conversation' style='height:100px;overflow-y:auto'><div style='height:400px'>tail</div></section>",
+            "<section id='scroller' style='height:100px;overflow-y:auto'><div style='height:400px'>tail</div></section>",
             DocumentConfig::default(),
         );
         document.inner_mut().resolve(0.0);
-        let conversation = document
+        let scroller = document
             .inner()
             .tree()
             .iter()
             .find_map(|(id, node)| {
                 node.element_data()
-                    .is_some_and(|element| element_attr(element, "id") == Some("conversation"))
+                    .is_some_and(|element| element_attr(element, "id") == Some("scroller"))
                     .then_some(id)
             })
             .unwrap();
         document
             .inner_mut()
-            .get_node_mut(conversation)
+            .get_node_mut(scroller)
             .unwrap()
             .scroll_offset_mut()
             .y = 60.0;
@@ -2746,10 +2467,10 @@ mod tests {
         let row = diagnostic_layout_row(
             &inner,
             &SemanticNode {
-                id: conversation.as_u64(),
+                id: scroller.as_u64(),
                 parent: None,
                 role: "generic".into(),
-                name: "Conversation".into(),
+                name: "Scrollable region".into(),
                 value: None,
                 enabled: true,
                 visible: true,

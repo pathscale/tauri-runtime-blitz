@@ -23,13 +23,12 @@ pub use blitz_control_protocol as control_protocol;
 mod script_queue;
 pub use script_queue::ScriptQueue;
 mod runtime;
+#[cfg(target_os = "macos")]
+mod window_effects;
 #[cfg(feature = "agent-control")]
 pub use blitz_traits::profiling::DebugOptions as RuntimeDebugOptions;
 #[cfg(all(feature = "diagnostics", unix))]
 pub use runtime::set_diagnostics_handler;
-/// Restyle the window's glass from values the stylesheet owns.
-#[cfg(target_os = "macos")]
-pub use runtime::set_window_glass;
 pub use runtime::{
     BlitzEventLoopProxy, BlitzRuntime, BlitzRuntimeHandle, builder, set_document_factory,
     set_runtime_trace,
@@ -44,6 +43,9 @@ pub use runtime::{
     begin_deep_profiling, deep_profiling_enabled, deep_profiling_permitted,
     set_deep_profiling_permitted,
 };
+/// Apply reusable macOS window glass without exposing AppKit to embedders.
+#[cfg(target_os = "macos")]
+pub use window_effects::set_window_glass;
 mod webview;
 pub use webview::{BlitzWebviewDispatcher, PreparedBlitzWebview, prepare_pending_webview};
 mod window_dispatch;
