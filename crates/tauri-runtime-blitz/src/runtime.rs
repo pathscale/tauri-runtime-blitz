@@ -2049,10 +2049,13 @@ fn relaunch_current_process() -> std::io::Result<()> {
 
 #[cfg(all(feature = "agent-control", target_os = "macos"))]
 fn containing_app_bundle(executable: &std::path::Path) -> Option<std::path::PathBuf> {
-    executable
-        .ancestors()
-        .find(|path| path.extension().is_some_and(|extension| extension == "app"))
-        .map(std::path::Path::to_path_buf)
+    let macos = executable.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension()? == "app")
+        .then(|| bundle.to_path_buf())
 }
 
 #[cfg(all(feature = "agent-control", unix))]
@@ -2576,6 +2579,16 @@ mod tests {
         assert_eq!(
             containing_app_bundle(executable).as_deref(),
             Some(std::path::Path::new("/Applications/Example.app"))
+        );
+        assert_eq!(
+            containing_app_bundle(std::path::Path::new(
+                "/Applications/Example.app/Contents/Resources/helper"
+            )),
+            None
+        );
+        assert_eq!(
+            containing_app_bundle(std::path::Path::new("/tmp/example")),
+            None
         );
     }
 }
