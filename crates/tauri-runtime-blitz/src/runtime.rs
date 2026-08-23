@@ -2424,6 +2424,46 @@ mod tests {
 
     #[cfg(all(feature = "agent-control", unix))]
     #[test]
+    fn node_activation_bubbles_to_delegated_handlers() {
+        let mut document = ScriptDocument::from_html(
+            r#"
+            <main id="root">
+              <button id="target" style="width:80px;height:30px">Run</button>
+              <output id="result"></output>
+            </main>
+            <script>
+              const root = document.getElementById("root");
+              const result = document.getElementById("result");
+              root.addEventListener("mousedown", event => {
+                if (event.target.id === "target") result.textContent += "down ";
+              });
+              root.addEventListener("click", event => {
+                if (event.target.id === "target") result.textContent += "click";
+              });
+            </script>
+            "#,
+            DocumentConfig::default(),
+        );
+        document.execute_scripts();
+        document.inner_mut().resolve(0.0);
+        let (target, result) = {
+            let inner = document.inner();
+            (
+                inner.query_selector("#target").unwrap().unwrap(),
+                inner.query_selector("#result").unwrap().unwrap(),
+            )
+        };
+
+        activate_agent_node(&mut document, target.as_u64(), 1).unwrap();
+
+        assert_eq!(
+            document.inner().get_node(result).unwrap().text_content(),
+            "down click"
+        );
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
     fn node_double_click_is_one_runtime_action() {
         let mut document = ScriptDocument::from_html(
             r#"
