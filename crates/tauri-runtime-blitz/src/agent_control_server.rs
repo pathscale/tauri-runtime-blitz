@@ -253,18 +253,15 @@ fn instance_id() -> String {
 
 /// Whether a pid still names a live process.
 ///
-/// A zero-signal probe asks the kernel directly. Spawning `ps` here made
-/// discovery depend on subprocess policy and caused every stale descriptor to
-/// look live inside a sandbox that disallows process listing.
+/// `/proc` does not exist on macOS. A `ps` that cannot be run at all reports
+/// "live", because deleting another instance's descriptor on a bad guess is
+/// far worse than keeping a stale file.
 fn pid_is_live(pid: u32) -> bool {
-    if pid > libc::pid_t::MAX as u32 {
-        return false;
-    }
-    // SAFETY: signal zero does not mutate the target process.
-    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    std::process::Command::new("ps")
+        .args(["-p", &pid.to_string()])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(true)
 }
 
 /// Delete descriptors whose process is gone.
@@ -611,10 +608,11 @@ mod tests {
             path
         };
 
-        // pid 1 is always alive; u32::MAX cannot name a macOS process.
+        // pid 1 is always alive; a pid this process just observed as its own
+        // child cannot be, because `wait` has already reaped it.
         let own = write("own", std::process::id());
         let live = write("live", 1);
-        let dead = write("dead", u32::MAX);
+        let dead = write("dead", dead_pid());
 
         reap_dead_descriptors(&own);
 
@@ -627,5 +625,15 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A pid that has certainly exited: spawn something trivial and wait for it.
+    fn dead_pid() -> u32 {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("`true` runs");
+        let pid = child.id();
+        child.wait().expect("`true` exits");
+        pid
     }
 }
