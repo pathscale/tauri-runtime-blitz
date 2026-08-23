@@ -7,6 +7,7 @@ on:
       - Cargo.toml
       - crates/blitz-control-protocol/Cargo.toml
       - crates/tauri-runtime-blitz/Cargo.toml
+      - .github/workflows/publish.yml
   workflow_dispatch:
     inputs:
       version:
@@ -28,7 +29,9 @@ env:
 jobs:
   publish:
     name: Publish ordered crates
-    runs-on: ubuntu-latest
+    # The runtime is macOS-only. Verifying its package on Ubuntu pulls Tauri's
+    # GTK backend and fails before publication on missing system GLib.
+    runs-on: macos-14
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -51,10 +54,31 @@ jobs:
             exit 1
           fi
 
-      - name: Verify packages
+      # A failed run may publish the protocol before the runtime. Treat each
+      # crate independently so re-running safely completes that partial release.
+      - name: Check registry state
+        id: registry
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          for package in blitz-control-protocol tauri-runtime-blitz; do
+            published="$(curl -sS -H 'User-Agent: pathscale-ci' \
+              "https://crates.io/api/v1/crates/$package/versions" \
+              | jq -r --arg version "$version" \
+                '.versions[]? | select(.num == $version) | .num')"
+            key="${package//-/_}"
+            if [ -n "$published" ]; then
+              echo "$key=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$key=false" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+      - name: Verify protocol package
+        if: steps.registry.outputs.blitz_control_protocol == 'false'
         run: cargo package -p blitz-control-protocol
 
       - name: Publish protocol
+        if: steps.registry.outputs.blitz_control_protocol == 'false'
         run: cargo publish -p blitz-control-protocol
 
       - name: Wait for protocol index
@@ -69,7 +93,10 @@ jobs:
           echo "blitz-control-protocol $version did not reach the registry index" >&2
           exit 1
 
+      - name: Verify runtime package
+        if: steps.registry.outputs.tauri_runtime_blitz == 'false'
+        run: cargo package -p tauri-runtime-blitz
+
       - name: Publish runtime
-        run: |
-          cargo package -p tauri-runtime-blitz
-          cargo publish -p tauri-runtime-blitz
+        if: steps.registry.outputs.tauri_runtime_blitz == 'false'
+        run: cargo publish -p tauri-runtime-blitz
