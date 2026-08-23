@@ -6,6 +6,7 @@
 use std::sync::{Mutex, OnceLock};
 
 use objc2::rc::Retained;
+use objc2::runtime::AnyClass;
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSColor, NSGlassEffectView,
     NSGlassEffectViewStyle as AppKitGlassStyle, NSUserInterfaceItemIdentification, NSView,
@@ -94,6 +95,11 @@ fn install_backdrop(
     tint: Option<(u8, u8, u8, u8)>,
     radius: Option<f64>,
 ) -> bool {
+    // The typed binding panics while resolving a class that does not exist.
+    // Check dynamically so macOS before Liquid Glass reaches vibrancy instead.
+    if AnyClass::get(c"NSGlassEffectView").is_none() {
+        return false;
+    }
     let Some(main_thread) = MainThreadMarker::new() else {
         return false;
     };
