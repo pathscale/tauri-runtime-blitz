@@ -2464,6 +2464,48 @@ mod tests {
 
     #[cfg(all(feature = "agent-control", unix))]
     #[test]
+    fn node_activation_reaches_solid_style_document_delegation() {
+        let mut document = ScriptDocument::from_html(
+            r#"
+            <main id="root">
+              <button id="target" style="width:80px;height:30px">Run</button>
+              <output id="result"></output>
+            </main>
+            <script>
+              const target = document.getElementById("target");
+              const result = document.getElementById("result");
+              target.$$click = () => result.textContent = "delegated";
+              document.addEventListener("click", event => {
+                let node = event.target;
+                while (node) {
+                  if (node.$$click) node.$$click(event);
+                  node = node.parentNode;
+                }
+              });
+            </script>
+            "#,
+            DocumentConfig::default(),
+        );
+        document.execute_scripts();
+        document.inner_mut().resolve(0.0);
+        let (target, result) = {
+            let inner = document.inner();
+            (
+                inner.query_selector("#target").unwrap().unwrap(),
+                inner.query_selector("#result").unwrap().unwrap(),
+            )
+        };
+
+        activate_agent_node(&mut document, target.as_u64(), 1).unwrap();
+
+        assert_eq!(
+            document.inner().get_node(result).unwrap().text_content(),
+            "delegated"
+        );
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
     fn node_double_click_is_one_runtime_action() {
         let mut document = ScriptDocument::from_html(
             r#"
