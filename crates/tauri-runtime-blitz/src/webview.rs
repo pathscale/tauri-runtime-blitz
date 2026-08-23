@@ -78,32 +78,6 @@ where
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tauri_initialization_uses_supported_post_message_ipc() {
-        let source = "before; let customProtocolIpcFailed = false; after";
-        let rewritten = initialization_script_for_blitz(source);
-
-        assert_eq!(
-            rewritten,
-            "before; let customProtocolIpcFailed = true; after"
-        );
-    }
-
-    #[test]
-    fn unrelated_initialization_scripts_are_unchanged() {
-        let source = "window.pluginInitialized = true";
-
-        assert!(matches!(
-            initialization_script_for_blitz(source),
-            Cow::Borrowed(value) if value == source
-        ));
-    }
-}
-
 /// Thread-safe Tauri webview dispatcher backed by a [`ScriptQueue`].
 ///
 /// The dispatcher does not touch Boa directly. Its methods enqueue work that the owning Blitz
@@ -300,5 +274,31 @@ where
 
     fn clear_all_browsing_data(&self) -> tauri_runtime::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tauri_initialization_uses_supported_post_message_ipc() {
+        let source = "before; let customProtocolIpcFailed = false; after";
+        let rewritten = initialization_script_for_blitz(source);
+
+        assert_eq!(
+            rewritten,
+            "before; let customProtocolIpcFailed = true; after"
+        );
+    }
+
+    #[test]
+    fn unrelated_initialization_scripts_are_unchanged() {
+        let source = "window.pluginInitialized = true";
+
+        assert!(matches!(
+            initialization_script_for_blitz(source),
+            Cow::Borrowed(value) if value == source
+        ));
     }
 }

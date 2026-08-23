@@ -14,7 +14,7 @@ anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", version = "^0.
 style = { version = "0.20.0", package = "stylo" }
 blitz-dom = { package = "ps-blitz-dom", version = "^0.3.0-beta.6", optional = true }
 blitz-script = { package = "ps-blitz-script", version = "^0.3.0-beta.6", features = ["system-fonts"] }
-blitz-control-protocol = { path = "../blitz-control-protocol", version = "0.1.2", optional = true }
+blitz-control-protocol = { path = "../blitz-control-protocol", version = "0.1.3", optional = true }
 anyrender = { package = "ps-anyrender", version = "^0.13.0" }
 # Offscreen capture, behind `diagnostics` so a shipping build carries neither.
 #
@@ -33,6 +33,7 @@ blitz-traits = { package = "ps-blitz-traits", version = "^0.3.0-beta.6", optiona
 http = "1"
 endpoint-libs = { version = "2.1.5", default-features = false, features = ["agent-control"], optional = true }
 keyboard-types = { version = "0.7", optional = true }
+libc = "0.2"
 raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }

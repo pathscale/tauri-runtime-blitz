@@ -291,16 +291,18 @@ mod tests {
 
     #[test]
     fn preserves_agencyzero_window_attributes() {
-        let mut config = WindowConfig::default();
-        config.title = "AgencyZero".into();
-        config.width = 1344.0;
-        config.height = 900.0;
-        config.min_width = Some(960.0);
-        config.min_height = Some(640.0);
-        config.resizable = true;
-        config.visible = false;
-        config.hidden_title = true;
-        config.title_bar_style = TitleBarStyle::Overlay;
+        let config = WindowConfig {
+            title: "AgencyZero".into(),
+            width: 1344.0,
+            height: 900.0,
+            min_width: Some(960.0),
+            min_height: Some(640.0),
+            resizable: true,
+            visible: false,
+            hidden_title: true,
+            title_bar_style: TitleBarStyle::Overlay,
+            ..Default::default()
+        };
 
         let builder = BlitzWindowBuilder::with_config(&config);
         assert_eq!(builder.config.title, "AgencyZero");

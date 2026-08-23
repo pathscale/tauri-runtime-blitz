@@ -722,12 +722,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                             selected: element_attr(element, "aria-selected") == Some("true")
                                 || element_attr(element, "selected").is_some(),
                             bounds: rect.and_then(|rect| {
-                                let bounds = [
-                                    rect.x as f64,
-                                    rect.y as f64,
-                                    rect.width as f64,
-                                    rect.height as f64,
-                                ];
+                                let bounds = [rect.x, rect.y, rect.width, rect.height];
                                 bounds
                                     .iter()
                                     .all(|value| value.is_finite())
@@ -1022,12 +1017,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                     selected: element_attr(element, "aria-selected") == Some("true")
                         || element_attr(element, "selected").is_some(),
                     bounds: rect.and_then(|rect| {
-                        let bounds = [
-                            rect.x as f64,
-                            rect.y as f64,
-                            rect.width as f64,
-                            rect.height as f64,
-                        ];
+                        let bounds = [rect.x, rect.y, rect.width, rect.height];
                         bounds
                             .iter()
                             .all(|value| value.is_finite())
@@ -1259,9 +1249,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 code,
                 modifiers,
             } => {
-                let parsed_key = key
-                    .parse::<Key>()
-                    .unwrap_or_else(|_| Key::Character(key.into()));
+                let parsed_key = key.parse::<Key>().unwrap_or(Key::Character(key));
                 let parsed_code = code.parse::<Code>().unwrap_or(Code::Unidentified);
                 let event = key_event(
                     phase,
@@ -2406,38 +2394,29 @@ fn attach_window_backdrop(
     detach_window_backdrop(window);
 
     let bounds = container.bounds();
-    let glass: Retained<NSGlassEffectView> =
-        unsafe { NSGlassEffectView::initWithFrame(mtm.alloc(), bounds) };
+    let glass: Retained<NSGlassEffectView> = NSGlassEffectView::initWithFrame(mtm.alloc(), bounds);
 
     glass.setStyle(NSGlassEffectViewStyle::Regular);
     if let Some(radius) = radius {
         glass.setCornerRadius(radius);
     }
     if let Some((r, g, b, a)) = tint {
-        let color = unsafe {
-            NSColor::colorWithRed_green_blue_alpha(
-                f64::from(r) / 255.0,
-                f64::from(g) / 255.0,
-                f64::from(b) / 255.0,
-                f64::from(a) / 255.0,
-            )
-        };
-        unsafe { glass.setTintColor(Some(&color)) };
+        let color = NSColor::colorWithRed_green_blue_alpha(
+            f64::from(r) / 255.0,
+            f64::from(g) / 255.0,
+            f64::from(b) / 255.0,
+            f64::from(a) / 255.0,
+        );
+        glass.setTintColor(Some(&color));
     }
     glass.setAutoresizingMask(
         NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
     );
-    unsafe { glass.setIdentifier(Some(&objc2_foundation::NSString::from_str(BACKDROP_ID))) };
+    glass.setIdentifier(Some(&objc2_foundation::NSString::from_str(BACKDROP_ID)));
 
     // Below the renderer's view, so the content is drawn over the blur rather
     // than through it.
-    unsafe {
-        container.addSubview_positioned_relativeTo(
-            &glass,
-            NSWindowOrderingMode::Below,
-            Some(content),
-        );
-    }
+    container.addSubview_positioned_relativeTo(&glass, NSWindowOrderingMode::Below, Some(content));
 
     runtime_trace("window backdrop attached behind the content");
     true
@@ -2468,7 +2447,9 @@ fn detach_window_backdrop(window: &dyn winit::window::Window) {
     // Identifier rather than type, so a glass view some other code owns is not
     // torn out from under it.
     for view in container.subviews().iter() {
-        let matches = unsafe { view.identifier() }.is_some_and(|id| id.to_string() == BACKDROP_ID);
+        let matches = view
+            .identifier()
+            .is_some_and(|id| id.to_string() == BACKDROP_ID);
         if matches {
             view.removeFromSuperview();
         }

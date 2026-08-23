@@ -258,11 +258,14 @@ fn instance_id() -> String {
 /// another instance's descriptor on a bad guess is far worse than keeping a
 /// stale file.
 fn pid_is_live(pid: u32) -> bool {
-    std::process::Command::new("ps")
-        .args(["-p", &pid.to_string()])
-        .output()
-        .map(|out| out.status.success())
-        .unwrap_or(true)
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    // A signal of 0 checks existence without delivering anything. Unlike
+    // spawning `ps`, this still works in a sandbox that denies process-list
+    // access. EPERM means the process exists but belongs to another principal.
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 /// Delete descriptors whose process is gone.
@@ -491,6 +494,7 @@ mod tests {
                         active_element: None,
                         dom: Some(serde_json::Value::String("x".repeat(LARGE_DOM_BYTES))),
                         layout: None,
+                        computed_style: None,
                         metrics: RendererMetrics::default(),
                     })
                 }
