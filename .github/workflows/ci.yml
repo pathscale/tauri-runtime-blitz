@@ -13,41 +13,38 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Build and test
+  protocol:
+    name: Protocol (Linux)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Linux windowing dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev \
-            libjavascriptcoregtk-4.1-dev \
-            libsoup-3.0-dev \
-            libwebkit2gtk-4.1-dev \
-            libxkbcommon-dev \
-            librsvg2-dev \
-            patchelf
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
       - uses: Swatinem/rust-cache@v2
-
       - name: Format
         run: cargo fmt --all --check
-
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy -p blitz-control-protocol --all-targets -- -D warnings
+      - name: Test
+        run: cargo test -p blitz-control-protocol --locked
+      - name: Package protocol
+        run: cargo package -p blitz-control-protocol --locked
 
+  runtime:
+    name: Runtime (macOS)
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy -p tauri-runtime-blitz --all-targets --all-features -- -D warnings
       - name: Test
         # Runtime debug switches and sampling sessions are process-global by
         # design, so their tests must not mutate that state concurrently.
-        run: cargo test --workspace --all-features --locked -- --test-threads=1
-
-      - name: Package protocol
-        run: cargo package -p blitz-control-protocol --locked
+        run: cargo test -p tauri-runtime-blitz --all-features --locked -- --test-threads=1
