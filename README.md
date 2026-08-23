@@ -42,3 +42,16 @@ visible real-command IPC probe. Standalone child-webview creation remains unsupp
 | `docs/06-debug-control.md` | Reliable WebDriver-compatible control and diagnostics channel |
 | `docs/08-runtime-debug-settings.md` | Shared two-setting runtime gate for AgencyZero, Chuzz, and other embedders |
 | `docs/07-css-conformance.md` | Chromium/Blitz screenshot diffs and bounded visual gaps |
+
+## CI and releases
+
+Every pull request runs formatting, strict Clippy, the workspace's all-feature
+tests serially, and protocol packaging. Runtime debug tests are serial because
+their enablement and sampling state is process-global by design.
+
+Crates publish only from a `v<workspace-version>` tag or a manually dispatched
+`Publish crates` workflow with the exact workspace version. The workflow uses
+the repository's `CARGO_REGISTRY_TOKEN`, publishes `blitz-control-protocol`
+first, waits until that version resolves from the registry index, then packages
+and publishes `tauri-runtime-blitz`. A Cargo.toml version edit alone never
+publishes anything.
