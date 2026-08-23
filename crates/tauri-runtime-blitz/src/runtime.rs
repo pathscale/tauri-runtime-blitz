@@ -58,8 +58,8 @@ use blitz_dom::Document;
 #[cfg(all(feature = "agent-control", unix))]
 use blitz_traits::events::{
     BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta,
-    BlitzWheelEvent, KeyState, MouseEventButton, MouseEventButtons, Point, PointerCoords,
-    PointerDetails, UiEvent,
+    BlitzWheelEvent, DomEvent, DomEventData, KeyState, MouseEventButton, MouseEventButtons, Point,
+    PointerCoords, PointerDetails, UiEvent,
 };
 #[cfg(all(feature = "diagnostics", unix))]
 use blitz_traits::node_id::NodeId;
@@ -1159,42 +1159,28 @@ impl<T: UserEvent> RuntimeApplication<T> {
     fn perform_agent_action(&mut self, action: AgentAction) -> Result<(), DebugError> {
         match action {
             AgentAction::Click { node_id } => {
-                let node_id = blitz_dom::NodeId::from_u64(node_id);
-                let (x, y) = {
+                let document = self
+                    .agent_document()
+                    .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
+                self.agent_pointer = activate_agent_node(document, node_id, 1)?;
+            }
+            AgentAction::DoubleClick { node_id } => {
+                let document = self
+                    .agent_document()
+                    .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
+                self.agent_pointer = activate_agent_node(document, node_id, 2)?;
+            }
+            AgentAction::Hover { node_id } => {
+                let position = {
                     let document = self
                         .agent_document()
                         .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
-                    document.inner_mut().resolve(0.0);
-                    let inner = document.inner();
-                    if !node_is_visible(&inner, node_id) {
-                        return Err(debug_error("notInteractable", "node is not visible"));
-                    }
-                    let rect = inner
-                        .get_client_bounding_rect(node_id)
-                        .filter(|rect| rect.width > 0.0 && rect.height > 0.0)
-                        .ok_or_else(|| debug_error("notInteractable", "node has no layout box"))?;
-                    (
-                        (rect.x + rect.width / 2.0) as f32,
-                        (rect.y + rect.height / 2.0) as f32,
-                    )
+                    resolve_agent_node(document, node_id)?.1
                 };
-                self.agent_pointer = (x, y);
-                let down = pointer_event(
-                    self.agent_pointer,
-                    MouseEventButton::Main,
-                    MouseEventButtons::Primary,
-                    KeyboardModifiers::empty(),
-                );
+                self.agent_pointer = position;
                 let document = self.agent_document().unwrap();
                 document.handle_ui_event(UiEvent::PointerMove(pointer_event(
-                    (x, y),
-                    MouseEventButton::Main,
-                    MouseEventButtons::default(),
-                    KeyboardModifiers::empty(),
-                )));
-                document.handle_ui_event(UiEvent::PointerDown(down));
-                document.handle_ui_event(UiEvent::PointerUp(pointer_event(
-                    (x, y),
+                    position,
                     MouseEventButton::Main,
                     MouseEventButtons::default(),
                     KeyboardModifiers::empty(),
@@ -1876,6 +1862,86 @@ fn node_is_visible(document: &blitz_dom::BaseDocument, node_id: blitz_dom::NodeI
         current = node.parent;
     }
     true
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn resolve_agent_node(
+    document: &mut ScriptDocument,
+    raw_node_id: u64,
+) -> Result<(blitz_dom::NodeId, (f32, f32)), DebugError> {
+    let node_id = blitz_dom::NodeId::from_u64(raw_node_id);
+    document.inner_mut().resolve(0.0);
+    let inner = document.inner();
+    let node = inner
+        .get_node(node_id)
+        .ok_or_else(|| debug_error("unknownNode", "node does not exist"))?;
+    if !node_is_visible(&inner, node_id) {
+        return Err(debug_error("notInteractable", "node is not visible"));
+    }
+    if node
+        .element_data()
+        .is_some_and(|element| element_attr(element, "disabled").is_some())
+    {
+        return Err(debug_error("notInteractable", "node is disabled"));
+    }
+    let rect = inner
+        .get_client_bounding_rect(node_id)
+        .filter(|rect| rect.width > 0.0 && rect.height > 0.0)
+        .ok_or_else(|| debug_error("notInteractable", "node has no layout box"))?;
+    Ok((
+        node_id,
+        (
+            (rect.x + rect.width / 2.0) as f32,
+            (rect.y + rect.height / 2.0) as f32,
+        ),
+    ))
+}
+
+/// Activate the node the caller selected, without asking hit-testing to select
+/// it a second time from a screen coordinate.
+///
+/// The coordinates carried by DOM events are still the node's own geometry,
+/// because handlers use offsets and text fields use them for caret placement.
+/// They never choose the target. An overflowed or clipped node therefore gets
+/// the same pointer, mouse and click sequence as an on-screen one.
+#[cfg(all(feature = "agent-control", unix))]
+fn activate_agent_node(
+    document: &mut ScriptDocument,
+    raw_node_id: u64,
+    count: u8,
+) -> Result<(f32, f32), DebugError> {
+    let (node_id, position) = resolve_agent_node(document, raw_node_id)?;
+
+    for _ in 0..count {
+        let down = pointer_event(
+            position,
+            MouseEventButton::Main,
+            MouseEventButtons::Primary,
+            KeyboardModifiers::empty(),
+        );
+        let up = pointer_event(
+            position,
+            MouseEventButton::Main,
+            MouseEventButtons::default(),
+            KeyboardModifiers::empty(),
+        );
+        for data in [
+            DomEventData::PointerDown(down.clone()),
+            DomEventData::MouseDown(down),
+            DomEventData::PointerUp(up.clone()),
+            DomEventData::MouseUp(up.clone()),
+            DomEventData::Click(up),
+        ] {
+            // A mousedown handler can deliberately replace its own control.
+            // The action already happened; later phases have no surviving
+            // target and must not be retargeted to whatever took its place.
+            if document.inner().get_node(node_id).is_none() {
+                break;
+            }
+            document.dispatch_dom_event(DomEvent::new(node_id, data));
+        }
+    }
+    Ok(position)
 }
 
 #[cfg(all(feature = "agent-control", unix))]
@@ -2585,6 +2651,79 @@ mod tests {
         let shown_element = shown_node.element_data().unwrap();
         assert_eq!(semantic_role(shown_element), "button");
         assert_eq!(semantic_name(shown_element, shown_node, "button"), "Run");
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn node_activation_reaches_an_offscreen_mousedown_handler() {
+        let mut document = ScriptDocument::from_html(
+            r#"
+            <button id="target" style="position:absolute;left:-900px;width:80px;height:30px">Run</button>
+            <output id="result"></output>
+            <script>
+              const target = document.getElementById("target");
+              const result = document.getElementById("result");
+              target.addEventListener("mousedown", () => result.textContent += "down ");
+              target.addEventListener("click", () => result.textContent += "click");
+            </script>
+            "#,
+            DocumentConfig::default(),
+        );
+        document.execute_scripts();
+        document.inner_mut().resolve(0.0);
+        let (target, result) = {
+            let inner = document.inner();
+            (
+                inner.query_selector("#target").unwrap().unwrap(),
+                inner.query_selector("#result").unwrap().unwrap(),
+            )
+        };
+        assert!(
+            document
+                .inner()
+                .get_client_bounding_rect(target)
+                .is_some_and(|rect| rect.x < 0.0),
+            "the fixture must be outside the viewport"
+        );
+
+        activate_agent_node(&mut document, target.as_u64(), 1).unwrap();
+
+        assert_eq!(
+            document.inner().get_node(result).unwrap().text_content(),
+            "down click"
+        );
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn node_double_click_is_one_runtime_action() {
+        let mut document = ScriptDocument::from_html(
+            r#"
+            <button id="target" style="width:80px;height:30px">Open row</button>
+            <output id="result"></output>
+            <script>
+              document.getElementById("target").addEventListener("dblclick", () => {
+                document.getElementById("result").textContent = "double";
+              });
+            </script>
+            "#,
+            DocumentConfig::default(),
+        );
+        document.execute_scripts();
+        let (target, result) = {
+            let inner = document.inner();
+            (
+                inner.query_selector("#target").unwrap().unwrap(),
+                inner.query_selector("#result").unwrap().unwrap(),
+            )
+        };
+
+        activate_agent_node(&mut document, target.as_u64(), 2).unwrap();
+
+        assert_eq!(
+            document.inner().get_node(result).unwrap().text_content(),
+            "double"
+        );
     }
 
     #[cfg(all(feature = "diagnostics", unix))]
