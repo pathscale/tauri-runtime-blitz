@@ -253,14 +253,15 @@ fn instance_id() -> String {
 
 /// Whether a pid still names a live process.
 ///
-/// `/proc` does not exist on macOS. A `ps` that cannot be run at all reports
-/// "live", because deleting another instance's descriptor on a bad guess is
-/// far worse than keeping a stale file.
+/// `kill(pid, 0)` without a libc dependency, and `/proc` does not exist on
+/// macOS. A `ps` that cannot be run at all reports "live", because deleting
+/// another instance's descriptor on a bad guess is far worse than keeping a
+/// stale file.
 fn pid_is_live(pid: u32) -> bool {
     std::process::Command::new("ps")
         .args(["-p", &pid.to_string()])
         .output()
-        .map(|output| output.status.success())
+        .map(|out| out.status.success())
         .unwrap_or(true)
 }
 
@@ -609,7 +610,7 @@ mod tests {
         };
 
         // pid 1 is always alive; a pid this process just observed as its own
-        // child cannot be, because `wait` has already reaped it.
+        // child cannot be, because `ps` has already reaped it.
         let own = write("own", std::process::id());
         let live = write("live", 1);
         let dead = write("dead", dead_pid());
