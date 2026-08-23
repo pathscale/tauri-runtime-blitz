@@ -162,3 +162,17 @@ fn remove_backdrop(window: &dyn winit::window::Window) {
 fn channel(value: u8) -> f64 {
     f64::from(value) / 255.0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::AnyClass;
+
+    /// The normal macOS 14 job proves the fallback. The macOS 26 matrix leg
+    /// runs this ignored test explicitly, proving the typed path's native class
+    /// is present before a release claims Liquid Glass support.
+    #[test]
+    #[ignore = "requires the macOS 26 CI runner"]
+    fn liquid_glass_class_is_available() {
+        assert!(AnyClass::get(c"NSGlassEffectView").is_some());
+    }
+}

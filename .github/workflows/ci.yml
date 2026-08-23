@@ -33,8 +33,12 @@ jobs:
         run: cargo package -p blitz-control-protocol --locked
 
   runtime:
-    name: Runtime (macOS)
-    runs-on: macos-14
+    name: Runtime (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-26]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -48,3 +52,8 @@ jobs:
         # Runtime debug switches and sampling sessions are process-global by
         # design, so their tests must not mutate that state concurrently.
         run: cargo test -p tauri-runtime-blitz --all-features --locked -- --test-threads=1
+      - name: Verify Liquid Glass class
+        if: ${{ matrix.runner == 'macos-26' }}
+        run: >-
+          cargo test -p tauri-runtime-blitz --all-features --locked
+          liquid_glass_class_is_available -- --ignored
