@@ -706,7 +706,9 @@ impl<T: UserEvent> RuntimeApplication<T> {
                     .filter_map(|(id, node)| {
                         let element = node.element_data()?;
                         semantic_depth(&inner, id, root, max_depth)?;
-                        if !layout_chain_is_attached(&inner, id, layout_node_limit) {
+                        if !dom_chain_is_attached(&inner, id, layout_node_limit)
+                            || !layout_chain_is_valid(&inner, id, layout_node_limit)
+                        {
                             return None;
                         }
                         let rect = inner.get_client_bounding_rect(id);
@@ -993,7 +995,9 @@ impl<T: UserEvent> RuntimeApplication<T> {
             .iter()
             .filter_map(|(id, node)| {
                 let element = node.element_data()?;
-                if !layout_chain_is_attached(&inner, id, layout_node_limit) {
+                if !dom_chain_is_attached(&inner, id, layout_node_limit)
+                    || !layout_chain_is_valid(&inner, id, layout_node_limit)
+                {
                     return None;
                 }
                 let rect = inner.get_client_bounding_rect(id);
@@ -1878,7 +1882,33 @@ fn node_is_visible(document: &blitz_dom::BaseDocument, node_id: blitz_dom::NodeI
 }
 
 #[cfg(all(feature = "agent-control", unix))]
-fn layout_chain_is_attached(
+fn dom_chain_is_attached(
+    document: &blitz_dom::BaseDocument,
+    node_id: blitz_dom::NodeId,
+    node_limit: usize,
+) -> bool {
+    let root = document.root_node().id;
+    let mut current = Some(node_id);
+    // Removed DOM nodes intentionally remain allocated while JavaScript may
+    // still hold wrappers for them. They are not part of the document unless
+    // their parent chain reaches the one document root.
+    for _ in 0..=node_limit {
+        let Some(id) = current else {
+            return false;
+        };
+        if id == root {
+            return true;
+        }
+        let Some(node) = document.get_node(id) else {
+            return false;
+        };
+        current = node.parent;
+    }
+    false
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn layout_chain_is_valid(
     document: &blitz_dom::BaseDocument,
     node_id: blitz_dom::NodeId,
     node_limit: usize,
@@ -1912,7 +1942,10 @@ fn resolve_agent_node(
     if !node_is_visible(&inner, node_id) {
         return Err(debug_error("notInteractable", "node is not visible"));
     }
-    if !layout_chain_is_attached(&inner, node_id, inner.tree().iter().count()) {
+    let node_limit = inner.tree().iter().count();
+    if !dom_chain_is_attached(&inner, node_id, node_limit)
+        || !layout_chain_is_valid(&inner, node_id, node_limit)
+    {
         return Err(debug_error(
             "notInteractable",
             "node has a detached layout ancestor",
@@ -2452,7 +2485,7 @@ mod tests {
         let inner = document.inner();
         let target = inner.query_selector("#target").unwrap().unwrap();
         let node_limit = inner.tree().iter().count();
-        assert!(layout_chain_is_attached(&inner, target, node_limit));
+        assert!(layout_chain_is_valid(&inner, target, node_limit));
 
         let missing_parent = (1..=1024)
             .map(blitz_dom::NodeId::from_u64)
@@ -2464,7 +2497,34 @@ mod tests {
             .layout_parent
             .set(Some(missing_parent));
 
-        assert!(!layout_chain_is_attached(&inner, target, node_limit));
+        assert!(!layout_chain_is_valid(&inner, target, node_limit));
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn semantic_geometry_rejects_a_retained_dom_subtree() {
+        let mut document = ScriptDocument::from_html(
+            "<main><section id='removed'><button id='target'>Run</button></section></main>",
+            DocumentConfig::default(),
+        );
+        let (removed, target) = {
+            let inner = document.inner();
+            (
+                inner.query_selector("#removed").unwrap().unwrap(),
+                inner.query_selector("#target").unwrap().unwrap(),
+            )
+        };
+        let node_limit = document.inner().tree().iter().count();
+        assert!(dom_chain_is_attached(&document.inner(), target, node_limit));
+
+        blitz_dom::DocumentMutator::new(&mut document.inner_mut()).remove_node(removed);
+
+        let inner = document.inner();
+        assert!(
+            inner.get_node(target).is_some(),
+            "the DOM keeps detached nodes alive for JavaScript wrappers"
+        );
+        assert!(!dom_chain_is_attached(&inner, target, node_limit));
     }
 
     #[cfg(all(feature = "agent-control", unix))]
