@@ -1715,6 +1715,17 @@ fn element_attr<'a>(element: &'a blitz_dom::ElementData, name: &str) -> Option<&
 }
 
 #[cfg(all(feature = "agent-control", unix))]
+fn focuses_on_click(element: &blitz_dom::ElementData) -> bool {
+    let tag = element.name.local.as_ref();
+    matches!(tag, "button" | "input" | "select" | "textarea")
+        || tag == "a" && element_attr(element, "href").is_some()
+        || element_attr(element, "tabindex")
+            .and_then(|value| value.parse::<i32>().ok())
+            .is_some_and(|value| value >= 0)
+        || element_attr(element, "contenteditable").is_some_and(|value| value != "false")
+}
+
+#[cfg(all(feature = "agent-control", unix))]
 fn semantic_role(element: &blitz_dom::ElementData) -> String {
     if let Some(role) = element_attr(element, "role") {
         return role.into();
@@ -1921,6 +1932,11 @@ fn activate_agent_node(
     count: u8,
 ) -> Result<(f32, f32), DebugError> {
     let (node_id, position) = resolve_agent_node(document, raw_node_id)?;
+    let focusable = document
+        .inner()
+        .get_node(node_id)
+        .and_then(|node| node.element_data())
+        .is_some_and(focuses_on_click);
 
     for _ in 0..count {
         let down = pointer_event(
@@ -1949,6 +1965,9 @@ fn activate_agent_node(
                 break;
             }
             document.dispatch_dom_event(DomEvent::new(node_id, data));
+        }
+        if focusable && document.inner().get_node(node_id).is_some() {
+            document.inner_mut().set_focus_to(node_id);
         }
     }
     Ok(position)
@@ -2502,6 +2521,21 @@ mod tests {
             document.inner().get_node(result).unwrap().text_content(),
             "delegated"
         );
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn node_activation_applies_the_native_focus_default() {
+        let mut document = ScriptDocument::from_html(
+            r#"<main><div id="slider" role="slider" tabindex="0" style="width:80px;height:30px">Value</div></main>"#,
+            DocumentConfig::default(),
+        );
+        document.inner_mut().resolve(0.0);
+        let slider = document.inner().query_selector("#slider").unwrap().unwrap();
+
+        activate_agent_node(&mut document, slider.as_u64(), 1).unwrap();
+
+        assert_eq!(document.inner().get_focussed_node_id(), Some(slider));
     }
 
     #[cfg(all(feature = "agent-control", unix))]
