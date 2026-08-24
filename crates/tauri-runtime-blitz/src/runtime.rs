@@ -2597,7 +2597,7 @@ mod tests {
             )
         };
 
-        let replacement = "https://github.com/pathscale/WorkTable/issues/40";
+        let replacement = "https://example.test/org/repository/issues/40?view=full#comment-2";
         set_agent_node_value(&mut document, field, replacement.into()).unwrap();
 
         let inner = document.inner();
