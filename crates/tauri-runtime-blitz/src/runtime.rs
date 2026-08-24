@@ -694,6 +694,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 }
                 document.inner_mut().resolve(0.0);
                 let inner = document.inner();
+                let layout_node_limit = inner.tree().iter().count();
                 let root = root.map(blitz_dom::NodeId::from_u64);
                 if root.is_some_and(|id| inner.get_node(id).is_none()) {
                     return control_error("unknownNode", "the requested root node does not exist");
@@ -705,7 +706,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                     .filter_map(|(id, node)| {
                         let element = node.element_data()?;
                         semantic_depth(&inner, id, root, max_depth)?;
-                        if !layout_chain_is_attached(&inner, id) {
+                        if !layout_chain_is_attached(&inner, id, layout_node_limit) {
                             return None;
                         }
                         let rect = inner.get_client_bounding_rect(id);
@@ -985,13 +986,14 @@ impl<T: UserEvent> RuntimeApplication<T> {
         document.inner_mut().resolve(0.0);
         let snapshot_resolve_ms = resolve_started.elapsed().as_secs_f64() * 1_000.0;
         let inner = document.inner();
+        let layout_node_limit = inner.tree().iter().count();
         let active_element = inner.get_focussed_node_id().map(|id| id.as_u64());
         let nodes: Vec<SemanticNode> = inner
             .tree()
             .iter()
             .filter_map(|(id, node)| {
                 let element = node.element_data()?;
-                if !layout_chain_is_attached(&inner, id) {
+                if !layout_chain_is_attached(&inner, id, layout_node_limit) {
                     return None;
                 }
                 let rect = inner.get_client_bounding_rect(id);
@@ -1879,11 +1881,12 @@ fn node_is_visible(document: &blitz_dom::BaseDocument, node_id: blitz_dom::NodeI
 fn layout_chain_is_attached(
     document: &blitz_dom::BaseDocument,
     node_id: blitz_dom::NodeId,
+    node_limit: usize,
 ) -> bool {
     let mut current = Some(node_id);
     // A valid layout chain reaches its root in no more steps than there are
     // nodes. The bound also rejects corrupt cycles instead of hanging control.
-    for _ in 0..=document.tree().iter().count() {
+    for _ in 0..=node_limit {
         let Some(id) = current else {
             return true;
         };
@@ -1909,7 +1912,7 @@ fn resolve_agent_node(
     if !node_is_visible(&inner, node_id) {
         return Err(debug_error("notInteractable", "node is not visible"));
     }
-    if !layout_chain_is_attached(&inner, node_id) {
+    if !layout_chain_is_attached(&inner, node_id, inner.tree().iter().count()) {
         return Err(debug_error(
             "notInteractable",
             "node has a detached layout ancestor",
@@ -2448,7 +2451,8 @@ mod tests {
         document.inner_mut().resolve(0.0);
         let inner = document.inner();
         let target = inner.query_selector("#target").unwrap().unwrap();
-        assert!(layout_chain_is_attached(&inner, target));
+        let node_limit = inner.tree().iter().count();
+        assert!(layout_chain_is_attached(&inner, target, node_limit));
 
         let missing_parent = (1..=1024)
             .map(blitz_dom::NodeId::from_u64)
@@ -2460,7 +2464,7 @@ mod tests {
             .layout_parent
             .set(Some(missing_parent));
 
-        assert!(!layout_chain_is_attached(&inner, target));
+        assert!(!layout_chain_is_attached(&inner, target, node_limit));
     }
 
     #[cfg(all(feature = "agent-control", unix))]
