@@ -721,8 +721,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                             enabled: element_attr(element, "disabled").is_none()
                                 && element_attr(element, "aria-disabled") != Some("true"),
                             visible,
-                            selected: element_attr(element, "aria-selected") == Some("true")
-                                || element_attr(element, "selected").is_some(),
+                            selected: semantic_selected(element),
                             bounds: rect.and_then(|rect| {
                                 let bounds = [rect.x, rect.y, rect.width, rect.height];
                                 bounds
@@ -1016,8 +1015,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                     enabled: element_attr(element, "disabled").is_none()
                         && element_attr(element, "aria-disabled") != Some("true"),
                     visible,
-                    selected: element_attr(element, "aria-selected") == Some("true")
-                        || element_attr(element, "selected").is_some(),
+                    selected: semantic_selected(element),
                     bounds: rect.and_then(|rect| {
                         let bounds = [rect.x, rect.y, rect.width, rect.height];
                         bounds
@@ -1766,6 +1764,16 @@ fn semantic_value(element: &blitz_dom::ElementData) -> Option<String> {
 }
 
 #[cfg(all(feature = "agent-control", unix))]
+fn semantic_selected(element: &blitz_dom::ElementData) -> bool {
+    element.checkbox_input_checked().unwrap_or(false)
+        || element_attr(element, "aria-selected") == Some("true")
+        || element_attr(element, "aria-pressed") == Some("true")
+        || element_attr(element, "aria-checked") == Some("true")
+        || element_attr(element, "checked").is_some()
+        || element_attr(element, "selected").is_some()
+}
+
+#[cfg(all(feature = "agent-control", unix))]
 fn semantic_depth(
     document: &blitz_dom::BaseDocument,
     node_id: blitz_dom::NodeId,
@@ -2394,6 +2402,32 @@ mod tests {
         let shown_element = shown_node.element_data().unwrap();
         assert_eq!(semantic_role(shown_element), "button");
         assert_eq!(semantic_name(shown_element, shown_node, "button"), "Run");
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn semantic_selection_includes_native_and_aria_states() {
+        let document = ScriptDocument::from_html(
+            r#"
+            <button id="pressed" aria-pressed="true">Pressed</button>
+            <div id="checked" role="radio" aria-checked="true">Checked</div>
+            <div id="selected" role="option" aria-selected="true">Selected</div>
+            <input id="native" type="checkbox" checked>
+            <button id="plain">Plain</button>
+            "#,
+            DocumentConfig::default(),
+        );
+        let inner = document.inner();
+        let selected = |selector: &str| {
+            let id = inner.query_selector(selector).unwrap().unwrap();
+            semantic_selected(inner.get_node(id).unwrap().element_data().unwrap())
+        };
+
+        assert!(selected("#pressed"));
+        assert!(selected("#checked"));
+        assert!(selected("#selected"));
+        assert!(selected("#native"));
+        assert!(!selected("#plain"));
     }
 
     #[cfg(all(feature = "agent-control", unix))]
