@@ -2595,7 +2595,8 @@ mod tests {
             )
         };
 
-        set_agent_node_value(&mut document, field, "replacement".into()).unwrap();
+        let replacement = "https://github.com/pathscale/WorkTable/issues/40";
+        set_agent_node_value(&mut document, field, replacement.into()).unwrap();
 
         let inner = document.inner();
         let text = inner
@@ -2607,11 +2608,8 @@ mod tests {
             .unwrap()
             .editor
             .raw_text();
-        assert_eq!(text, "replacement");
-        assert_eq!(
-            inner.get_node(result).unwrap().text_content(),
-            "replacement"
-        );
+        assert_eq!(text, replacement);
+        assert_eq!(inner.get_node(result).unwrap().text_content(), replacement);
     }
 
     #[cfg(all(feature = "agent-control", unix))]
