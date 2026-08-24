@@ -705,6 +705,9 @@ impl<T: UserEvent> RuntimeApplication<T> {
                     .filter_map(|(id, node)| {
                         let element = node.element_data()?;
                         semantic_depth(&inner, id, root, max_depth)?;
+                        if !layout_chain_is_attached(&inner, id) {
+                            return None;
+                        }
                         let rect = inner.get_client_bounding_rect(id);
                         let visible = node_is_visible(&inner, id)
                             && rect
@@ -988,6 +991,9 @@ impl<T: UserEvent> RuntimeApplication<T> {
             .iter()
             .filter_map(|(id, node)| {
                 let element = node.element_data()?;
+                if !layout_chain_is_attached(&inner, id) {
+                    return None;
+                }
                 let rect = inner.get_client_bounding_rect(id);
                 let visible = node_is_visible(&inner, id)
                     && rect
@@ -1870,6 +1876,26 @@ fn node_is_visible(document: &blitz_dom::BaseDocument, node_id: blitz_dom::NodeI
 }
 
 #[cfg(all(feature = "agent-control", unix))]
+fn layout_chain_is_attached(
+    document: &blitz_dom::BaseDocument,
+    node_id: blitz_dom::NodeId,
+) -> bool {
+    let mut current = Some(node_id);
+    // A valid layout chain reaches its root in no more steps than there are
+    // nodes. The bound also rejects corrupt cycles instead of hanging control.
+    for _ in 0..=document.tree().iter().count() {
+        let Some(id) = current else {
+            return true;
+        };
+        let Some(node) = document.get_node(id) else {
+            return false;
+        };
+        current = node.layout_parent.get();
+    }
+    false
+}
+
+#[cfg(all(feature = "agent-control", unix))]
 fn resolve_agent_node(
     document: &mut ScriptDocument,
     raw_node_id: u64,
@@ -1882,6 +1908,12 @@ fn resolve_agent_node(
         .ok_or_else(|| debug_error("unknownNode", "node does not exist"))?;
     if !node_is_visible(&inner, node_id) {
         return Err(debug_error("notInteractable", "node is not visible"));
+    }
+    if !layout_chain_is_attached(&inner, node_id) {
+        return Err(debug_error(
+            "notInteractable",
+            "node has a detached layout ancestor",
+        ));
     }
     if node
         .element_data()
@@ -2404,6 +2436,31 @@ mod tests {
         let shown_element = shown_node.element_data().unwrap();
         assert_eq!(semantic_role(shown_element), "button");
         assert_eq!(semantic_name(shown_element, shown_node, "button"), "Run");
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn semantic_geometry_rejects_a_detached_layout_ancestor() {
+        let mut document = ScriptDocument::from_html(
+            "<main><button id='target'>Run</button></main>",
+            DocumentConfig::default(),
+        );
+        document.inner_mut().resolve(0.0);
+        let inner = document.inner();
+        let target = inner.query_selector("#target").unwrap().unwrap();
+        assert!(layout_chain_is_attached(&inner, target));
+
+        let missing_parent = (1..=1024)
+            .map(blitz_dom::NodeId::from_u64)
+            .find(|id| inner.get_node(*id).is_none())
+            .expect("the fixture must leave at least one node id unused");
+        inner
+            .get_node(target)
+            .unwrap()
+            .layout_parent
+            .set(Some(missing_parent));
+
+        assert!(!layout_chain_is_attached(&inner, target));
     }
 
     #[cfg(all(feature = "agent-control", unix))]
