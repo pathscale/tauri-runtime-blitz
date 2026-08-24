@@ -1183,33 +1183,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 let document = self
                     .agent_document()
                     .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
-                if !document
-                    .inner()
-                    .get_node(node_id)
-                    .and_then(|node| node.element_data())
-                    .is_some_and(|element| element.text_input_data().is_some())
-                {
-                    return Err(debug_error("notEditable", "node is not a text input"));
-                }
-                document.inner_mut().set_focus_to(node_id);
-                let mut select_all = KeyboardModifiers::empty();
-                #[cfg(target_os = "macos")]
-                select_all.insert(KeyboardModifiers::META);
-                #[cfg(not(target_os = "macos"))]
-                select_all.insert(KeyboardModifiers::CONTROL);
-                document.handle_ui_event(UiEvent::KeyDown(key_event(
-                    KeyPhase::Down,
-                    Key::Character("a".into()),
-                    Code::KeyA,
-                    select_all,
-                )));
-                document.handle_ui_event(UiEvent::KeyUp(key_event(
-                    KeyPhase::Up,
-                    Key::Character("a".into()),
-                    Code::KeyA,
-                    select_all,
-                )));
-                document.handle_ui_event(UiEvent::Ime(BlitzImeEvent::Commit(value)));
+                set_agent_node_value(document, node_id, value)?;
             }
             AgentAction::ScrollIntoView { node_id } => {
                 let node_id = blitz_dom::NodeId::from_u64(node_id);
@@ -1974,6 +1948,28 @@ fn activate_agent_node(
 }
 
 #[cfg(all(feature = "agent-control", unix))]
+fn set_agent_node_value(
+    document: &mut ScriptDocument,
+    node_id: blitz_dom::NodeId,
+    value: String,
+) -> Result<(), DebugError> {
+    if !document
+        .inner()
+        .get_node(node_id)
+        .and_then(|node| node.element_data())
+        .is_some_and(|element| element.text_input_data().is_some())
+    {
+        return Err(debug_error("notEditable", "node is not a text input"));
+    }
+    document.inner_mut().set_focus_to(node_id);
+    document
+        .inner_mut()
+        .with_text_input(node_id, |mut editor| editor.select_all());
+    document.handle_ui_event(UiEvent::Ime(BlitzImeEvent::Commit(value)));
+    Ok(())
+}
+
+#[cfg(all(feature = "agent-control", unix))]
 fn keyboard_modifiers(modifiers: ControlModifiers) -> KeyboardModifiers {
     let mut output = KeyboardModifiers::empty();
     output.set(KeyboardModifiers::SHIFT, modifiers.shift);
@@ -2536,6 +2532,52 @@ mod tests {
         activate_agent_node(&mut document, slider.as_u64(), 1).unwrap();
 
         assert_eq!(document.inner().get_focussed_node_id(), Some(slider));
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn setting_a_node_value_replaces_text_and_dispatches_input() {
+        let mut document = ScriptDocument::from_html(
+            r#"
+            <main>
+              <input id="field" value="old" style="width:80px;height:30px">
+              <output id="result"></output>
+            </main>
+            <script>
+              const field = document.getElementById("field");
+              const result = document.getElementById("result");
+              field.addEventListener("input", event => result.textContent = event.target.value);
+            </script>
+            "#,
+            DocumentConfig::default(),
+        );
+        document.execute_scripts();
+        document.inner_mut().resolve(0.0);
+        let (field, result) = {
+            let inner = document.inner();
+            (
+                inner.query_selector("#field").unwrap().unwrap(),
+                inner.query_selector("#result").unwrap().unwrap(),
+            )
+        };
+
+        set_agent_node_value(&mut document, field, "replacement".into()).unwrap();
+
+        let inner = document.inner();
+        let text = inner
+            .get_node(field)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .text_input_data()
+            .unwrap()
+            .editor
+            .raw_text();
+        assert_eq!(text, "replacement");
+        assert_eq!(
+            inner.get_node(result).unwrap().text_content(),
+            "replacement"
+        );
     }
 
     #[cfg(all(feature = "agent-control", unix))]
