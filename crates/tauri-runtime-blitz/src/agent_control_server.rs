@@ -282,6 +282,10 @@ fn pid_is_live(pid: u32) -> bool {
 /// strictly alone — and this one's own descriptor is skipped by path, since it
 /// has just been written and its pid is obviously live.
 fn reap_dead_descriptors(own: &Path) {
+    reap_dead_descriptors_with(own, pid_is_live);
+}
+
+fn reap_dead_descriptors_with(own: &Path, is_live: impl Fn(u32) -> bool) {
     let Some(dir) = own.parent() else { return };
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -297,7 +301,7 @@ fn reap_dead_descriptors(own: &Path) {
         let Ok(descriptor) = serde_json::from_str::<DebugDescriptor>(&text) else {
             continue;
         };
-        if pid_is_live(descriptor.pid) {
+        if is_live(descriptor.pid) {
             continue;
         }
         let _ = remove_file(path.with_extension("sock"));
@@ -609,13 +613,13 @@ mod tests {
             path
         };
 
-        // pid 1 is always alive; a pid this process just observed as its own
-        // child cannot be, because `ps` has already reaped it.
+        // Liveness is injected here because process inspection may be denied by
+        // the test sandbox. This test owns descriptor cleanup, not `ps` itself.
         let own = write("own", std::process::id());
         let live = write("live", 1);
-        let dead = write("dead", dead_pid());
+        let dead = write("dead", 2);
 
-        reap_dead_descriptors(&own);
+        reap_dead_descriptors_with(&own, |pid| pid == std::process::id() || pid == 1);
 
         assert!(own.exists(), "the caller's own descriptor is never reaped");
         assert!(live.exists(), "a live instance must keep its descriptor");
@@ -626,15 +630,5 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A pid that has certainly exited: spawn something trivial and wait for it.
-    fn dead_pid() -> u32 {
-        let mut child = std::process::Command::new("true")
-            .spawn()
-            .expect("`true` runs");
-        let pid = child.id();
-        child.wait().expect("`true` exits");
-        pid
     }
 }
