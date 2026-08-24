@@ -31,6 +31,9 @@ pub(crate) enum ControlBridgeRequest {
 pub(crate) type ControlBridge =
     Arc<dyn Fn(ControlBridgeRequest) -> oneshot::Receiver<DebugResponse> + Send + Sync + 'static>;
 
+#[cfg(test)]
+pub(crate) static CONTROL_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub(crate) struct AgentControlServer {
     descriptor_path: PathBuf,
     socket_path: PathBuf,
@@ -351,6 +354,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn local_server_is_mcp_compatible_and_needs_no_session_or_token() {
+        let _guard = CONTROL_TEST_LOCK.lock().await;
         let bridge: ControlBridge = Arc::new(|request| {
             let (sender, receiver) = oneshot::channel();
             assert!(matches!(
@@ -445,6 +449,7 @@ mod tests {
     #[cfg(feature = "diagnostics")]
     #[tokio::test(flavor = "current_thread")]
     async fn diagnostics_metrics_reach_the_runtime_bridge_over_mcp() {
+        let _guard = CONTROL_TEST_LOCK.lock().await;
         let bridge: ControlBridge = Arc::new(|request| {
             let (sender, receiver) = oneshot::channel();
             assert!(matches!(
@@ -484,6 +489,7 @@ mod tests {
     #[cfg(feature = "diagnostics")]
     #[tokio::test(flavor = "current_thread")]
     async fn large_snapshot_keeps_the_socket_open_for_follow_up_requests() {
+        let _guard = CONTROL_TEST_LOCK.lock().await;
         const LARGE_DOM_BYTES: usize = 9 * 1024 * 1024;
         let bridge: ControlBridge = Arc::new(|request| {
             let (sender, receiver) = oneshot::channel();
