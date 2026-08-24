@@ -36,6 +36,8 @@ use winit::window::{WindowAttributes, WindowButtons, WindowLevel};
 #[cfg(target_os = "macos")]
 use winit::platform::macos::{ApplicationHandlerExtMacOS, WindowAttributesMacOS};
 
+#[cfg(all(feature = "agent-control", unix, test))]
+use crate::agent_control_server::CONTROL_TEST_LOCK;
 #[cfg(all(feature = "diagnostics", unix))]
 use crate::control_protocol::{
     DebugSnapshot, DiagnosticsRequest, FrameMetrics, FrameWindowMetrics, RendererMetrics,
@@ -2707,8 +2709,9 @@ mod tests {
     }
 
     #[cfg(all(feature = "agent-control", unix))]
-    #[test]
-    fn control_interface_is_absent_until_explicitly_enabled() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_interface_is_absent_until_explicitly_enabled() {
+        let _guard = CONTROL_TEST_LOCK.lock().await;
         let bridge: ControlBridge = Arc::new(|_| {
             let (sender, receiver) = tokio::sync::oneshot::channel();
             let _ = sender.send(DebugResponse::Ack);
