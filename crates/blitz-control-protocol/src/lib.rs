@@ -355,6 +355,15 @@ pub struct SemanticNode {
     pub visible: bool,
     pub selected: bool,
     pub bounds: Option<[f64; 4]>,
+    /// The library slot this element is, when it is part of a component.
+    ///
+    /// Read from `data-slot`, which a component library emits to name its own
+    /// parts. Addressing a control by the slot it *is* rather than by the text
+    /// it happens to carry is what lets a harness tell a trigger from the thing
+    /// it opens: those two routinely share an accessible name, so a check
+    /// written against the name passes whether or not anything happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

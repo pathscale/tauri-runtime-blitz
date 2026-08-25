@@ -737,6 +737,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                                     .all(|value| value.is_finite())
                                     .then_some(bounds)
                             }),
+                            slot: element_attr(element, "data-slot").map(str::to_owned),
                         })
                     })
                     .collect();
@@ -1037,6 +1038,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                             .all(|value| value.is_finite())
                             .then_some(bounds)
                     }),
+                    slot: element_attr(element, "data-slot").map(str::to_owned),
                 })
             })
             .collect();
