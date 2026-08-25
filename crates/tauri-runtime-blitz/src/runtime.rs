@@ -2801,6 +2801,7 @@ mod tests {
                 visible: true,
                 selected: false,
                 bounds: Some([0.0, 0.0, 100.0, 100.0]),
+                slot: None,
             },
         )
         .unwrap();
