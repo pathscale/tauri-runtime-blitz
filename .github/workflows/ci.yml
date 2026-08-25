@@ -4,6 +4,12 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      legacy_macos:
+        description: Also run the macos-14 runtime job
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -37,7 +43,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-14, macos-26]
+        # macos-14 only on request. It is the older of the two and may not be
+        # exercised again; leaving it in every run means a red tick nobody
+        # intends to act on, which is how a real failure stops being read.
+        runner: >-
+          ${{ github.event_name == 'workflow_dispatch'
+          && inputs.legacy_macos
+          && fromJSON('["macos-14", "macos-26"]')
+          || fromJSON('["macos-26"]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
