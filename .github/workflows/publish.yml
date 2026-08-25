@@ -31,7 +31,7 @@ jobs:
     name: Publish ordered crates
     # The runtime is macOS-only. Verifying its package on Ubuntu pulls Tauri's
     # GTK backend and fails before publication on missing system GLib.
-    runs-on: macos-14
+    runs-on: namespace-profile-agency-tahoe
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
