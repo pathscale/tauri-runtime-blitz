@@ -1699,7 +1699,12 @@ fn element_attr<'a>(element: &'a blitz_dom::ElementData, name: &str) -> Option<&
         .attrs()
         .iter()
         .find(|attribute| attribute.name.local.as_ref() == name)
-        .map(|attribute| attribute.value.as_str())
+        // `as_ref`, not `as_str`. Attribute values are an interned atom as of
+        // ps-blitz-dom 0.3.0-beta.11, and `str::as_str` is still unstable, so
+        // `as_str` here resolved to the nightly-only inherent method and
+        // failed to build on stable. `as_ref` borrows the atom as a `&str`,
+        // which is what this signature returns.
+        .map(|attribute| attribute.value.as_ref())
 }
 
 #[cfg(all(feature = "agent-control", unix))]
