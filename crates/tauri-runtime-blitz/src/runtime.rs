@@ -2138,12 +2138,6 @@ fn relaunch_current_process() -> std::io::Result<()> {
     if let Some(bundle) = containing_app_bundle(&executable) {
         let mut command = std::process::Command::new("/usr/bin/open");
         command.arg("-n");
-        if let Some(descriptor) = std::env::var_os("TAURI_BLITZ_CONTROL_DESCRIPTOR") {
-            command.arg("--env").arg(format!(
-                "TAURI_BLITZ_CONTROL_DESCRIPTOR={}",
-                descriptor.to_string_lossy()
-            ));
-        }
         command.arg(bundle).spawn()?;
         return Ok(());
     }
