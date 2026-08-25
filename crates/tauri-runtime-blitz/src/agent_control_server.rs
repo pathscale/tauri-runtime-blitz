@@ -276,8 +276,8 @@ fn pid_is_live(pid: u32) -> bool {
 /// exit, but a crash, a `kill -9`, or a rebuild that unlinks the socket under a
 /// running instance all skip it.
 ///
-/// That is not merely untidy. A tool with no `TAURI_BLITZ_CONTROL_DESCRIPTOR`
-/// has to guess which of them is current, and a directory full of dead entries
+/// That is not merely untidy. A tool discovering the current descriptor has to
+/// distinguish them, and a directory full of dead entries
 /// is what makes "attached to a stale socket and reported numbers for a process
 /// nobody is looking at" a routine failure rather than a rare one.
 ///
@@ -313,13 +313,9 @@ fn reap_dead_descriptors_with(own: &Path, is_live: impl Fn(u32) -> bool) {
 }
 
 fn descriptor_path(instance_id: &str) -> PathBuf {
-    std::env::var_os("TAURI_BLITZ_CONTROL_DESCRIPTOR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::temp_dir()
-                .join("tauri-blitz-agent")
-                .join(format!("{instance_id}.json"))
-        })
+    std::env::temp_dir()
+        .join("tauri-blitz-agent")
+        .join(format!("{instance_id}.json"))
 }
 
 fn write_descriptor(path: &Path, descriptor: &DebugDescriptor) -> io::Result<()> {
@@ -582,9 +578,9 @@ mod tests {
      * The filename carries a pid and a nanosecond stamp, so every launch leaves
      * a new pair behind and nothing removed them — one machine had 99. `Drop`
      * handles an orderly exit, but a crash, a `kill -9`, or a rebuild that
-     * unlinks the socket under a running instance all skip it. A tool with no
-     * `TAURI_BLITZ_CONTROL_DESCRIPTOR` then has to guess which is current,
-     * which is how attaching to a stale socket became routine.
+     * unlinks the socket under a running instance all skip it. A tool then has
+     * to guess which is current, which is how attaching to a stale socket
+     * became routine.
      *
      * The asymmetry is the whole point: reaping too eagerly would delete a
      * concurrent instance's descriptor, which is worse than leaving litter.
