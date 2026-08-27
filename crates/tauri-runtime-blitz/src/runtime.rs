@@ -207,6 +207,48 @@ fn diagnostic_layout_row(
         "scrollRange": [
             unzoom(layout.scroll_width()),
             unzoom(layout.scroll_height())
+        ],
+        // Border and padding, so a box that renders taller than it was asked
+        // for can be attributed instead of guessed at.
+        //
+        // Without these the only readable numbers are the outer bounds and
+        // `clientSize`, and both are the border box: a pill declared `24px`
+        // that measures 27.8 offers no way to tell a 1px border from padding
+        // from a wrong height, and the difference decides which file to edit.
+        // Four consecutive wrong diagnoses of one composer pill came from
+        // inferring these from CSS files rather than reading what the engine
+        // computed, which is exactly the guessing this replaces.
+        //
+        // Edge order matches CSS shorthand: top, right, bottom, left.
+        "border": [
+            unzoom(layout.border.top),
+            unzoom(layout.border.right),
+            unzoom(layout.border.bottom),
+            unzoom(layout.border.left)
+        ],
+        "padding": [
+            unzoom(layout.padding.top),
+            unzoom(layout.padding.right),
+            unzoom(layout.padding.bottom),
+            unzoom(layout.padding.left)
+        ],
+        // The content box, which is what an author's `height` sets under the
+        // default `content-box` sizing. `clientSize` above is the border box.
+        "contentSize": [
+            unzoom(
+                layout.size.width
+                    - layout.border.left
+                    - layout.border.right
+                    - layout.padding.left
+                    - layout.padding.right
+            ),
+            unzoom(
+                layout.size.height
+                    - layout.border.top
+                    - layout.border.bottom
+                    - layout.padding.top
+                    - layout.padding.bottom
+            )
         ]
     }))
 }
