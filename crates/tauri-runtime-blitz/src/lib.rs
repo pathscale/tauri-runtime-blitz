@@ -15,6 +15,19 @@ mod ipc;
 pub use ipc::attach_ipc_handler;
 #[cfg(all(feature = "agent-control", unix))]
 mod agent_control_server;
+/// Serving inspection from a host that is not this runtime.
+///
+/// The server binds a socket and forwards framed requests to a closure; it has
+/// no window, no event loop and no Tauri in it, and the module's own tests
+/// start one from a bare closure. Exported so a headless host holding a
+/// document can be inspected the same way the application is.
+///
+/// While this was private, inspecting a Blitz document from outside required
+/// opening a window. A QA harness that must not take over the desktop was
+/// pushed into screenshots and tree-file dumps instead, and neither can answer
+/// a question that involves clicking something.
+#[cfg(all(feature = "agent-control", unix))]
+pub use agent_control_server::{AgentControlServer, ControlBridge, ControlBridgeRequest};
 /// The wire protocol, which lives in its own crate so clients can speak it
 /// without building a renderer. Re-exported under the name this crate has
 /// always used it by, so `control_protocol::` paths keep resolving.
