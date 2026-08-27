@@ -28,17 +28,17 @@ mod agent_control_server;
 /// a question that involves clicking something.
 #[cfg(all(feature = "agent-control", unix))]
 pub use agent_control_server::{AgentControlServer, ControlBridge, ControlBridgeRequest};
-/// Answer an `Inspect` request against a document, from the same code the
-/// runtime uses. A headless host needs this to serve the socket it now can
-/// host; reimplementing it is how a harness ends up disagreeing with the
-/// inspector about what a node is called.
-#[cfg(all(feature = "agent-control", unix))]
-pub use runtime::inspect_document;
 /// The wire protocol, which lives in its own crate so clients can speak it
 /// without building a renderer. Re-exported under the name this crate has
 /// always used it by, so `control_protocol::` paths keep resolving.
 #[cfg(feature = "agent-control")]
 pub use blitz_control_protocol as control_protocol;
+/// Answer an `Inspect` request against a document, from the same code the
+/// runtime uses. A headless host needs this to serve the socket it now can
+/// host; reimplementing it is how a harness ends up disagreeing with the
+/// inspector about what a node is called.
+#[cfg(all(feature = "agent-control", unix))]
+pub use runtime::{click_agent_node, inspect_document};
 mod script_queue;
 pub use script_queue::ScriptQueue;
 mod runtime;

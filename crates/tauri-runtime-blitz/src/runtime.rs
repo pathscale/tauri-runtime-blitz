@@ -1926,6 +1926,22 @@ fn resolve_agent_node(
 /// They never choose the target. An overflowed or clipped node therefore gets
 /// the same pointer, mouse and click sequence as an on-screen one.
 #[cfg(all(feature = "agent-control", unix))]
+/// Click a semantic node, by id, the way the runtime does.
+///
+/// Dispatches pointer, mouse and click events in browser order against the
+/// document directly, so a headless host can drive a control without a window,
+/// a pointer or a compositor. This is what makes the interaction checks
+/// runnable at all: a still picture of the tree cannot answer what a control
+/// does when it is pressed.
+#[cfg(all(feature = "agent-control", unix))]
+pub fn click_agent_node(
+    document: &mut ScriptDocument,
+    node_id: u64,
+    count: u8,
+) -> Result<(f32, f32), DebugError> {
+    activate_agent_node(document, node_id, count)
+}
+
 fn activate_agent_node(
     document: &mut ScriptDocument,
     raw_node_id: u64,
