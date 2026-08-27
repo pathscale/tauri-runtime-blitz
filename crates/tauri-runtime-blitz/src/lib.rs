@@ -38,7 +38,7 @@ pub use blitz_control_protocol as control_protocol;
 /// host; reimplementing it is how a harness ends up disagreeing with the
 /// inspector about what a node is called.
 #[cfg(all(feature = "agent-control", unix))]
-pub use runtime::{click_agent_node, inspect_document};
+pub use runtime::{click_agent_node, inspect_document, press_agent_key};
 mod script_queue;
 pub use script_queue::ScriptQueue;
 mod runtime;

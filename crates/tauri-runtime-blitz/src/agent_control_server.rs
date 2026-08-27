@@ -113,8 +113,16 @@ impl AgentControlServer {
         })
     }
 
-    #[cfg(test)]
-    fn descriptor_path(&self) -> &Path {
+    /// Where this server announced itself.
+    ///
+    /// A headless host prints this so a client can attach to that exact
+    /// instance. Searching the descriptor directory instead races every other
+    /// instance on the machine, and a component sweep runs one host after
+    /// another, so the newest descriptor is not reliably the right one.
+    ///
+    /// Was `#[cfg(test)]`, because inside this crate the runtime already knows
+    /// where it wrote the descriptor and only a test needed to ask.
+    pub fn descriptor_path(&self) -> &Path {
         &self.descriptor_path
     }
 

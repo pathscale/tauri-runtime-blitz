@@ -1934,6 +1934,42 @@ fn resolve_agent_node(
 /// runnable at all: a still picture of the tree cannot answer what a control
 /// does when it is pressed.
 #[cfg(all(feature = "agent-control", unix))]
+/// Send one key to a document, down then up.
+///
+/// Only keys, deliberately. The pointer and wheel arms of the runtime's input
+/// handler carry pointer position and button state on the runtime itself, and a
+/// headless host has no window for those to mean anything against. A key needs
+/// nothing but the document.
+///
+/// Escape closing a menu is a real assertion in a check suite, and it is the one
+/// that says a control does not trap the person using it. Without this a host
+/// answers those checks with `unsupported`, which is honest but leaves the
+/// suite unable to run them at all.
+#[cfg(all(feature = "agent-control", unix))]
+pub fn press_agent_key(
+    document: &mut ScriptDocument,
+    key: &str,
+    code: &str,
+) -> Result<(), DebugError> {
+    let parsed_key = key
+        .parse::<Key>()
+        .unwrap_or_else(|_| Key::Character(key.to_owned()));
+    let parsed_code = code.parse::<Code>().unwrap_or(Code::Unidentified);
+    for phase in [KeyPhase::Down, KeyPhase::Up] {
+        let event = key_event(
+            phase,
+            parsed_key.clone(),
+            parsed_code,
+            keyboard_modifiers(Default::default()),
+        );
+        document.handle_ui_event(match phase {
+            KeyPhase::Down => UiEvent::KeyDown(event),
+            KeyPhase::Up => UiEvent::KeyUp(event),
+        });
+    }
+    Ok(())
+}
+
 pub fn click_agent_node(
     document: &mut ScriptDocument,
     node_id: u64,
