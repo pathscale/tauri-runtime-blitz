@@ -687,66 +687,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 let Some(document) = self.agent_document() else {
                     return control_error("documentUnavailable", "no active script document");
                 };
-                for _ in 0..100 {
-                    if !document.poll(None) {
-                        break;
-                    }
-                }
-                document.inner_mut().resolve(0.0);
-                let inner = document.inner();
-                let layout_node_limit = inner.tree().iter().count();
-                let root = root.map(blitz_dom::NodeId::from_u64);
-                if root.is_some_and(|id| inner.get_node(id).is_none()) {
-                    return control_error("unknownNode", "the requested root node does not exist");
-                }
-                let focused_node = inner.get_focussed_node_id().map(|id| id.as_u64());
-                let nodes = inner
-                    .tree()
-                    .iter()
-                    .filter_map(|(id, node)| {
-                        let element = node.element_data()?;
-                        semantic_depth(&inner, id, root, max_depth)?;
-                        if !dom_chain_is_attached(&inner, id, layout_node_limit)
-                            || !layout_chain_is_valid(&inner, id, layout_node_limit)
-                        {
-                            return None;
-                        }
-                        let rect = inner.get_client_bounding_rect(id);
-                        let visible = node_is_visible(&inner, id)
-                            && rect
-                                .as_ref()
-                                .is_some_and(|rect| rect.width > 0.0 && rect.height > 0.0);
-                        let role = semantic_role(element);
-                        let name = semantic_name(element, node, &role);
-                        let value = semantic_value(element);
-                        let parent = semantic_parent(&inner, id, root).map(|id| id.as_u64());
-                        Some(SemanticNode {
-                            id: id.as_u64(),
-                            parent,
-                            role,
-                            name,
-                            value,
-                            enabled: element_attr(element, "disabled").is_none()
-                                && element_attr(element, "aria-disabled") != Some("true"),
-                            visible,
-                            selected: semantic_selected(element),
-                            bounds: rect.and_then(|rect| {
-                                let bounds = [rect.x, rect.y, rect.width, rect.height];
-                                bounds
-                                    .iter()
-                                    .all(|value| value.is_finite())
-                                    .then_some(bounds)
-                            }),
-                            slot: element_attr(element, "data-slot").map(str::to_owned),
-                        })
-                    })
-                    .collect();
-                DebugResponse::AgentSnapshot(AgentSnapshot {
-                    revision,
-                    active_window: Some("blitz-main".into()),
-                    focused_node,
-                    nodes,
-                })
+                inspect_document(document, root, max_depth, revision)
             }
             AgentControlRequest::Act(action) => match self.perform_agent_action(action) {
                 Ok(()) => {
@@ -2920,4 +2861,90 @@ mod tests {
             None
         );
     }
+}
+
+/// Read a document's semantic tree.
+///
+/// Split out of the runtime's `Inspect` handler so a host that is not this
+/// runtime can answer the same request from the same code. Nothing in it is
+/// window-dependent: it polls the document, resolves layout and reads the tree.
+///
+/// Sharing the implementation is the point. A second copy of "what is a node's
+/// name" drifts from this one immediately. A QA harness that reimplemented
+/// naming against `build_accessibility_tree` got a different answer than the
+/// inspector for every element on the page, because that builder names only
+/// text nodes and carries no geometry at all.
+#[cfg(all(feature = "agent-control", unix))]
+pub fn inspect_document(
+    document: &mut ScriptDocument,
+    root: Option<u64>,
+    max_depth: u32,
+    revision: u64,
+) -> DebugResponse {
+    /*
+     * Poll and resolve before reading anything. The tree is read straight after
+     * this, and a document that has not settled reports boxes from before its
+     * last mutation, which reads as a component that laid out wrongly rather
+     * than one that was measured too early.
+     */
+    for _ in 0..100 {
+        if !document.poll(None) {
+            break;
+        }
+    }
+    document.inner_mut().resolve(0.0);
+    let inner = document.inner();
+    let layout_node_limit = inner.tree().iter().count();
+    let root = root.map(blitz_dom::NodeId::from_u64);
+    if root.is_some_and(|id| inner.get_node(id).is_none()) {
+        return control_error("unknownNode", "the requested root node does not exist");
+    }
+    let focused_node = inner.get_focussed_node_id().map(|id| id.as_u64());
+    let nodes = inner
+        .tree()
+        .iter()
+        .filter_map(|(id, node)| {
+            let element = node.element_data()?;
+            semantic_depth(&inner, id, root, max_depth)?;
+            if !dom_chain_is_attached(&inner, id, layout_node_limit)
+                || !layout_chain_is_valid(&inner, id, layout_node_limit)
+            {
+                return None;
+            }
+            let rect = inner.get_client_bounding_rect(id);
+            let visible = node_is_visible(&inner, id)
+                && rect
+                    .as_ref()
+                    .is_some_and(|rect| rect.width > 0.0 && rect.height > 0.0);
+            let role = semantic_role(element);
+            let name = semantic_name(element, node, &role);
+            let value = semantic_value(element);
+            let parent = semantic_parent(&inner, id, root).map(|id| id.as_u64());
+            Some(SemanticNode {
+                id: id.as_u64(),
+                parent,
+                role,
+                name,
+                value,
+                enabled: element_attr(element, "disabled").is_none()
+                    && element_attr(element, "aria-disabled") != Some("true"),
+                visible,
+                selected: semantic_selected(element),
+                bounds: rect.and_then(|rect| {
+                    let bounds = [rect.x, rect.y, rect.width, rect.height];
+                    bounds
+                        .iter()
+                        .all(|value| value.is_finite())
+                        .then_some(bounds)
+                }),
+                slot: element_attr(element, "data-slot").map(str::to_owned),
+            })
+        })
+        .collect();
+    DebugResponse::AgentSnapshot(AgentSnapshot {
+        revision,
+        active_window: Some("blitz-main".into()),
+        focused_node,
+        nodes,
+    })
 }
