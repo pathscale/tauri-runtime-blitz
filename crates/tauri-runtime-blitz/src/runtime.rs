@@ -1727,12 +1727,41 @@ fn semantic_value(element: &blitz_dom::ElementData) -> Option<String> {
 
 #[cfg(all(feature = "agent-control", unix))]
 fn semantic_selected(element: &blitz_dom::ElementData) -> bool {
-    element.checkbox_input_checked().unwrap_or(false)
-        || element_attr(element, "aria-selected") == Some("true")
+    /*
+     * A real checkbox answers from its live state, not from its markup.
+     *
+     * `checkbox_input_checked` is the value the DOM updates when the control is
+     * toggled; the attributes below are the document as it was parsed and never
+     * move again. Asking the attributes about an input that has one is how a
+     * toggle reports the same state for ever.
+     */
+    if let Some(checked) = element.checkbox_input_checked() {
+        return checked;
+    }
+
+    /*
+     * Presence is not truth for these two.
+     *
+     * `checked` and `selected` are HTML boolean attributes, so bare `checked`
+     * means on. But a framework that renders a controlled value writes the
+     * value out: Solid emits `checked="false"`, and `.is_some()` called that
+     * selected. Every Switch, Radio and Checkbox in the QA harness reported
+     * `selected: true` before anything was pressed and could never change,
+     * which read as three components that ignore a click.
+     *
+     * Explicitly `"false"` is off; anything else present is on.
+     */
+    let attribute_on = |name| match element_attr(element, name) {
+        Some("false") => false,
+        Some(_) => true,
+        None => false,
+    };
+
+    element_attr(element, "aria-selected") == Some("true")
         || element_attr(element, "aria-pressed") == Some("true")
         || element_attr(element, "aria-checked") == Some("true")
-        || element_attr(element, "checked").is_some()
-        || element_attr(element, "selected").is_some()
+        || attribute_on("checked")
+        || attribute_on("selected")
 }
 
 #[cfg(all(feature = "agent-control", unix))]
@@ -2531,6 +2560,17 @@ mod tests {
             <div id="selected" role="option" aria-selected="true">Selected</div>
             <input id="native" type="checkbox" checked>
             <button id="plain">Plain</button>
+            <!--
+              A framework rendering a controlled value writes the value out
+              rather than omitting the attribute. Solid emits `checked="false"`
+              for `checked={false}`, and reading presence alone called that
+              selected: every Switch, Radio and Checkbox in the QA harness
+              reported `selected: true` before anything was pressed, and could
+              never change, which read as three components ignoring a click.
+            -->
+            <input id="native-unchecked" type="checkbox" checked="false">
+            <div id="aria-false" role="option" aria-selected="false">Not selected</div>
+            <div id="selected-false" role="option" selected="false">Not selected</div>
             "#,
             DocumentConfig::default(),
         );
@@ -2545,6 +2585,9 @@ mod tests {
         assert!(selected("#selected"));
         assert!(selected("#native"));
         assert!(!selected("#plain"));
+        assert!(!selected("#native-unchecked"));
+        assert!(!selected("#aria-false"));
+        assert!(!selected("#selected-false"));
     }
 
     #[cfg(all(feature = "agent-control", unix))]
