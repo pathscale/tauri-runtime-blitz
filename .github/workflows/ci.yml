@@ -29,9 +29,9 @@ jobs:
       - name: Clippy
         run: cargo clippy -p blitz-control-protocol --all-targets -- -D warnings
       - name: Test
-        run: cargo test -p blitz-control-protocol --locked
+        run: cargo test -p blitz-control-protocol
       - name: Package protocol
-        run: cargo package -p blitz-control-protocol --locked
+        run: cargo package -p blitz-control-protocol
 
   runtime:
     name: Runtime (macOS)
@@ -51,8 +51,8 @@ jobs:
       - name: Test
         # Runtime debug switches and sampling sessions are process-global by
         # design, so their tests must not mutate that state concurrently.
-        run: cargo test -p tauri-runtime-blitz --all-features --locked -- --test-threads=1
+        run: cargo test -p tauri-runtime-blitz --all-features -- --test-threads=1
       - name: Verify Liquid Glass class
         run: >-
-          cargo test -p tauri-runtime-blitz --all-features --locked
+          cargo test -p tauri-runtime-blitz --all-features
           liquid_glass_class_is_available -- --ignored
