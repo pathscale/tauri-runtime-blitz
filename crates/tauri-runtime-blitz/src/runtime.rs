@@ -1975,6 +1975,27 @@ fn resolve_agent_node(
 /// answers those checks with `unsupported`, which is honest but leaves the
 /// suite unable to run them at all.
 #[cfg(all(feature = "agent-control", unix))]
+/// Move the pointer onto a semantic node, by id.
+///
+/// The position comes from the node's own box, so this needs no pointer
+/// bookkeeping and works in a host that has no window to own a cursor. A
+/// control revealed on hover cannot be reached any other way, and a defect that
+/// only appears on the second entry cannot be reached at all without it.
+#[cfg(all(feature = "agent-control", unix))]
+pub fn hover_agent_node(
+    document: &mut ScriptDocument,
+    node_id: u64,
+) -> Result<(f32, f32), DebugError> {
+    let position = resolve_agent_node(document, node_id)?.1;
+    document.handle_ui_event(UiEvent::PointerMove(pointer_event(
+        position,
+        MouseEventButton::Main,
+        MouseEventButtons::default(),
+        KeyboardModifiers::empty(),
+    )));
+    Ok(position)
+}
+
 pub fn press_agent_key(
     document: &mut ScriptDocument,
     key: &str,
