@@ -22,19 +22,31 @@ use crate::control_protocol::{
     peek_request_id,
 };
 
-pub(crate) enum ControlBridgeRequest {
+pub enum ControlBridgeRequest {
     Agent(AgentControlRequest),
     #[cfg(feature = "diagnostics")]
     Diagnostics(DiagnosticsRequest),
 }
 
-pub(crate) type ControlBridge =
+/// How the server reaches whatever is holding the document.
+///
+/// A plain closure, deliberately: the server binds a socket, frames requests
+/// and hands them over, and knows nothing about windows, event loops or Tauri.
+/// The crate's own tests have always constructed one from a bare closure with
+/// nothing running, which is the proof that a host does not need a window to
+/// serve inspection.
+///
+/// Public so a headless host can serve one. While this was `pub(crate)` the
+/// only way to inspect a Blitz document from outside was to open a window,
+/// which is what pushed a QA harness into screenshot and tree-file workarounds
+/// that could not answer any question involving a click.
+pub type ControlBridge =
     Arc<dyn Fn(ControlBridgeRequest) -> oneshot::Receiver<DebugResponse> + Send + Sync + 'static>;
 
 #[cfg(test)]
 pub(crate) static CONTROL_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-pub(crate) struct AgentControlServer {
+pub struct AgentControlServer {
     descriptor_path: PathBuf,
     socket_path: PathBuf,
     shutdown: Option<oneshot::Sender<()>>,
@@ -53,7 +65,14 @@ pub(crate) struct AgentControlServer {
 }
 
 impl AgentControlServer {
-    pub(crate) fn start(bridge: ControlBridge) -> io::Result<Self> {
+    /// Bind the inspection socket and announce the descriptor.
+    ///
+    /// Nothing here needs a window: it creates a Unix listener, writes a
+    /// descriptor file and serves frames from a thread. A headless host that
+    /// owns a document can call this and be inspected exactly like the real
+    /// application, which is what lets a QA sweep run with no display server
+    /// and still answer questions that require clicking.
+    pub fn start(bridge: ControlBridge) -> io::Result<Self> {
         let instance_id = instance_id();
         let descriptor_path = descriptor_path(&instance_id);
         let socket_path = descriptor_path.with_extension("sock");
