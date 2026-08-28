@@ -1163,6 +1163,13 @@ impl<T: UserEvent> RuntimeApplication<T> {
     #[cfg(all(feature = "agent-control", unix))]
     fn perform_agent_action(&mut self, action: AgentAction) -> Result<(), DebugError> {
         match action {
+            AgentAction::Focus { node_id } => {
+                let node_id = blitz_dom::NodeId::from_u64(node_id);
+                let document = self
+                    .agent_document()
+                    .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
+                focus_agent_node(document, node_id)?;
+            }
             AgentAction::Click { node_id } => {
                 let document = self
                     .agent_document()
@@ -2177,6 +2184,26 @@ fn set_agent_node_value(
 }
 
 #[cfg(all(feature = "agent-control", unix))]
+fn focus_agent_node(
+    document: &mut ScriptDocument,
+    node_id: blitz_dom::NodeId,
+) -> Result<(), DebugError> {
+    let focusable = document
+        .inner()
+        .get_node(node_id)
+        .and_then(|node| node.element_data())
+        .is_some_and(focuses_on_click);
+    if !focusable {
+        return Err(debug_error(
+            "notFocusable",
+            "node does not accept keyboard focus",
+        ));
+    }
+    document.inner_mut().set_focus_to(node_id);
+    Ok(())
+}
+
+#[cfg(all(feature = "agent-control", unix))]
 fn keyboard_modifiers(modifiers: ControlModifiers) -> KeyboardModifiers {
     let mut output = KeyboardModifiers::empty();
     output.set(KeyboardModifiers::SHIFT, modifiers.shift);
@@ -2916,6 +2943,42 @@ mod tests {
         activate_agent_node(&mut document, slider.as_u64(), 1).unwrap();
 
         assert_eq!(document.inner().get_focussed_node_id(), Some(slider));
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn semantic_focus_does_not_activate_the_target() {
+        let mut document = ScriptDocument::from_html(
+            r#"
+            <main>
+              <button id="target" style="width:80px;height:30px">Start fork</button>
+              <output id="result"></output>
+            </main>
+            <script>
+              document.getElementById("target").addEventListener("click", () => {
+                document.getElementById("result").textContent = "activated";
+              });
+            </script>
+            "#,
+            DocumentConfig::default(),
+        );
+        document.execute_scripts();
+        document.inner_mut().resolve(0.0);
+        let (target, result) = {
+            let inner = document.inner();
+            (
+                inner.query_selector("#target").unwrap().unwrap(),
+                inner.query_selector("#result").unwrap().unwrap(),
+            )
+        };
+
+        focus_agent_node(&mut document, target).unwrap();
+
+        assert_eq!(document.inner().get_focussed_node_id(), Some(target));
+        assert_eq!(
+            document.inner().get_node(result).unwrap().text_content(),
+            ""
+        );
     }
 
     #[cfg(all(feature = "agent-control", unix))]

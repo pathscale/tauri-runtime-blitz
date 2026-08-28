@@ -320,6 +320,14 @@ pub struct LayoutDiagnosticRow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", content = "params", rename_all = "camelCase")]
 pub enum AgentAction {
+    /// Give one semantic node keyboard focus without activating it.
+    ///
+    /// Keyboard setup must not be implemented as a click: focusing a submit,
+    /// delete or fork button by clicking it performs the action before the key
+    /// under test is ever delivered.
+    Focus {
+        node_id: u64,
+    },
     /// Activate one semantic node without resolving it back through screen
     /// coordinates. The runtime dispatches pointer, mouse and click events in
     /// browser order directly to this target.
