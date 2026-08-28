@@ -808,144 +808,161 @@ impl<T: UserEvent> RuntimeApplication<T> {
         &mut self,
         request: blitz_control_protocol::CaptureRequest,
     ) -> Result<blitz_control_protocol::CapturedImage, DebugError> {
-        use anyrender::ImageRenderer;
-        use base64::Engine as _;
-
-        // Clamped rather than trusted. A scale of zero produces a zero-sized
-        // buffer and a negative one panics inside the rasteriser, and neither
-        // should be reachable from a debug socket.
-        let scale = if request.scale.is_finite() && request.scale > 0.0 {
-            request.scale.clamp(0.1, 8.0)
-        } else {
-            1.0
-        };
-
-        let node_id = request.node_id;
-        let script_document = self
+        let document = self
             .agent_document()
             .ok_or_else(|| debug_error("documentUnavailable", "no active script document"))?;
+        capture_document(document, request)
+    }
+}
 
-        // Style and layout first, so the capture reflects pending mutations
-        // rather than the frame before them. Same call `collect_diagnostics`
-        // makes, for the same reason.
-        script_document.inner_mut().resolve(0.0);
+/// Draw a standalone script document through the same CPU paint path used by
+/// runtime diagnostics.
+///
+/// Headless QA hosts intentionally have no `RuntimeApplication`, but they must
+/// not substitute a second renderer for native visual checks. Keeping the
+/// capture implementation here makes a host capture and a live-app capture
+/// byte-for-byte comparable.
+#[cfg(all(feature = "diagnostics", unix))]
+pub fn capture_document(
+    script_document: &mut ScriptDocument,
+    request: blitz_control_protocol::CaptureRequest,
+) -> Result<blitz_control_protocol::CapturedImage, DebugError> {
+    use anyrender::ImageRenderer;
+    use base64::Engine as _;
 
-        // Copied out rather than held: the guard is a `Ref` and the borrow has
-        // to end before the mutable one the paint below needs.
-        let (full_width, full_height) = {
-            let inner = script_document.inner();
-            let viewport = inner.viewport();
-            (viewport.window_size.0, viewport.window_size.1)
-        };
-        if full_width == 0 || full_height == 0 {
-            return Err(debug_error(
-                "captureUnavailable",
-                "the document has no viewport to draw",
-            ));
-        }
+    // Clamped rather than trusted. A scale of zero produces a zero-sized
+    // buffer and a negative one panics inside the rasteriser, and neither
+    // should be reachable from a debug socket.
+    let scale = if request.scale.is_finite() && request.scale > 0.0 {
+        request.scale.clamp(0.1, 8.0)
+    } else {
+        1.0
+    };
 
-        // The region to keep, in unscaled document pixels.
-        let (crop_x, crop_y, crop_width, crop_height) = match node_id {
-            None => (
-                0.0_f64,
-                0.0_f64,
-                f64::from(full_width),
-                f64::from(full_height),
-            ),
-            Some(id) => {
-                let inner = script_document.inner();
-                let node = inner
-                    .get_node(NodeId::from_u64(id))
-                    .ok_or_else(|| debug_error("unknownNode", &format!("no node {id}")))?;
-                let layout = node.final_layout();
-                let position = node.absolute_position(0.0, 0.0);
-                if layout.size.width <= 0.0 || layout.size.height <= 0.0 {
-                    return Err(debug_error(
-                        "captureEmpty",
-                        &format!("node {id} has a zero-sized box, so there is nothing to capture"),
-                    ));
-                }
-                let box_ = (
-                    f64::from(position.x),
-                    f64::from(position.y),
-                    f64::from(layout.size.width),
-                    f64::from(layout.size.height),
-                );
-                drop(inner);
-                box_
-            }
-        };
+    let node_id = request.node_id;
 
-        let width = ((crop_width * f64::from(scale)).round() as u32).max(1);
-        let height = ((crop_height * f64::from(scale)).round() as u32).max(1);
-        // A whole window at 8x is gigabytes; refuse rather than exhaust memory
-        // on a machine that is probably already running the app under test.
-        const MAX_PIXELS: u64 = 64 * 1024 * 1024;
-        if u64::from(width) * u64::from(height) > MAX_PIXELS {
-            return Err(debug_error(
-                "captureTooLarge",
-                &format!("{width}x{height} exceeds the capture ceiling; lower the scale"),
-            ));
-        }
+    // Style and layout first, so the capture reflects pending mutations
+    // rather than the frame before them. Same call `collect_diagnostics`
+    // makes, for the same reason.
+    script_document.inner_mut().resolve(0.0);
 
-        /*
-         * Paint the whole document, then cut the region out of the buffer.
-         *
-         * `paint_scene` takes offsets, but they move the scene inside a surface
-         * that is still sized to the full viewport, so drawing a 66x64 button
-         * into a 66x64 target put every pixel of it outside the surface and
-         * returned solid black. Cropping afterwards depends on no such
-         * semantics: whatever the renderer drew for the real window is what
-         * gets cut, which is the property this whole call exists to have.
-         */
-        let full_pixel_width = ((f64::from(full_width) * f64::from(scale)).round() as u32).max(1);
-        let full_pixel_height = ((f64::from(full_height) * f64::from(scale)).round() as u32).max(1);
-        let mut document = script_document.inner_mut();
-        let mut renderer =
-            anyrender_vello_cpu::VelloCpuImageRenderer::new(full_pixel_width, full_pixel_height);
-        let mut full_rgba =
-            Vec::with_capacity((full_pixel_width as usize) * (full_pixel_height as usize) * 4);
-        renderer.render_to_vec(
-            |scene| {
-                blitz_paint::paint_scene(
-                    scene,
-                    &mut document,
-                    f64::from(scale),
-                    full_pixel_width,
-                    full_pixel_height,
-                    0,
-                    0,
-                );
-            },
-            &mut full_rgba,
-        );
-
-        // The crop, clamped to the surface: a node partly offscreen yields the
-        // part that exists rather than an error or a panic.
-        let left = ((crop_x * f64::from(scale)).round().max(0.0) as u32).min(full_pixel_width);
-        let top = ((crop_y * f64::from(scale)).round().max(0.0) as u32).min(full_pixel_height);
-        let width = width.min(full_pixel_width.saturating_sub(left)).max(1);
-        let height = height.min(full_pixel_height.saturating_sub(top)).max(1);
-
-        let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
-        for row in 0..height {
-            let source = (((top + row) as usize) * (full_pixel_width as usize) + left as usize) * 4;
-            let take = (width as usize) * 4;
-            if source + take <= full_rgba.len() {
-                rgba.extend_from_slice(&full_rgba[source..source + take]);
-            } else {
-                rgba.resize(rgba.len() + take, 0);
-            }
-        }
-
-        Ok(blitz_control_protocol::CapturedImage {
-            width,
-            height,
-            rgba_base64: base64::engine::general_purpose::STANDARD.encode(&rgba),
-            node_id,
-        })
+    // Copied out rather than held: the guard is a `Ref` and the borrow has
+    // to end before the mutable one the paint below needs.
+    let (full_width, full_height) = {
+        let inner = script_document.inner();
+        let viewport = inner.viewport();
+        (viewport.window_size.0, viewport.window_size.1)
+    };
+    if full_width == 0 || full_height == 0 {
+        return Err(debug_error(
+            "captureUnavailable",
+            "the document has no viewport to draw",
+        ));
     }
 
+    // The region to keep, in unscaled document pixels.
+    let (crop_x, crop_y, crop_width, crop_height) = match node_id {
+        None => (
+            0.0_f64,
+            0.0_f64,
+            f64::from(full_width),
+            f64::from(full_height),
+        ),
+        Some(id) => {
+            let inner = script_document.inner();
+            let node = inner
+                .get_node(NodeId::from_u64(id))
+                .ok_or_else(|| debug_error("unknownNode", &format!("no node {id}")))?;
+            let layout = node.final_layout();
+            let position = node.absolute_position(0.0, 0.0);
+            if layout.size.width <= 0.0 || layout.size.height <= 0.0 {
+                return Err(debug_error(
+                    "captureEmpty",
+                    &format!("node {id} has a zero-sized box, so there is nothing to capture"),
+                ));
+            }
+            let box_ = (
+                f64::from(position.x),
+                f64::from(position.y),
+                f64::from(layout.size.width),
+                f64::from(layout.size.height),
+            );
+            drop(inner);
+            box_
+        }
+    };
+
+    let width = ((crop_width * f64::from(scale)).round() as u32).max(1);
+    let height = ((crop_height * f64::from(scale)).round() as u32).max(1);
+    // A whole window at 8x is gigabytes; refuse rather than exhaust memory
+    // on a machine that is probably already running the app under test.
+    const MAX_PIXELS: u64 = 64 * 1024 * 1024;
+    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+        return Err(debug_error(
+            "captureTooLarge",
+            &format!("{width}x{height} exceeds the capture ceiling; lower the scale"),
+        ));
+    }
+
+    /*
+     * Paint the whole document, then cut the region out of the buffer.
+     *
+     * `paint_scene` takes offsets, but they move the scene inside a surface
+     * that is still sized to the full viewport, so drawing a 66x64 button
+     * into a 66x64 target put every pixel of it outside the surface and
+     * returned solid black. Cropping afterwards depends on no such
+     * semantics: whatever the renderer drew for the real window is what
+     * gets cut, which is the property this whole call exists to have.
+     */
+    let full_pixel_width = ((f64::from(full_width) * f64::from(scale)).round() as u32).max(1);
+    let full_pixel_height = ((f64::from(full_height) * f64::from(scale)).round() as u32).max(1);
+    let mut document = script_document.inner_mut();
+    let mut renderer =
+        anyrender_vello_cpu::VelloCpuImageRenderer::new(full_pixel_width, full_pixel_height);
+    let mut full_rgba =
+        Vec::with_capacity((full_pixel_width as usize) * (full_pixel_height as usize) * 4);
+    renderer.render_to_vec(
+        |scene| {
+            blitz_paint::paint_scene(
+                scene,
+                &mut document,
+                f64::from(scale),
+                full_pixel_width,
+                full_pixel_height,
+                0,
+                0,
+            );
+        },
+        &mut full_rgba,
+    );
+
+    // The crop, clamped to the surface: a node partly offscreen yields the
+    // part that exists rather than an error or a panic.
+    let left = ((crop_x * f64::from(scale)).round().max(0.0) as u32).min(full_pixel_width);
+    let top = ((crop_y * f64::from(scale)).round().max(0.0) as u32).min(full_pixel_height);
+    let width = width.min(full_pixel_width.saturating_sub(left)).max(1);
+    let height = height.min(full_pixel_height.saturating_sub(top)).max(1);
+
+    let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+    for row in 0..height {
+        let source = (((top + row) as usize) * (full_pixel_width as usize) + left as usize) * 4;
+        let take = (width as usize) * 4;
+        if source + take <= full_rgba.len() {
+            rgba.extend_from_slice(&full_rgba[source..source + take]);
+        } else {
+            rgba.resize(rgba.len() + take, 0);
+        }
+    }
+
+    Ok(blitz_control_protocol::CapturedImage {
+        width,
+        height,
+        rgba_base64: base64::engine::general_purpose::STANDARD.encode(&rgba),
+        node_id,
+    })
+}
+
+impl<T: UserEvent> RuntimeApplication<T> {
     #[cfg(all(feature = "diagnostics", unix))]
     fn collect_diagnostics(
         &mut self,
