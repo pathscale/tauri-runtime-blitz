@@ -1838,6 +1838,7 @@ fn semantic_selected(element: &blitz_dom::ElementData) -> bool {
     element_attr(element, "aria-selected") == Some("true")
         || element_attr(element, "aria-pressed") == Some("true")
         || element_attr(element, "aria-checked") == Some("true")
+        || element_attr(element, "aria-current").is_some_and(|value| value != "false")
         || attribute_on("checked")
         || attribute_on("selected")
 }
@@ -2743,6 +2744,7 @@ mod tests {
             <button id="pressed" aria-pressed="true">Pressed</button>
             <div id="checked" role="radio" aria-checked="true">Checked</div>
             <div id="selected" role="option" aria-selected="true">Selected</div>
+            <button id="current-page" aria-current="page">Current page</button>
             <input id="native" type="checkbox" checked>
             <button id="plain">Plain</button>
             <!--
@@ -2755,6 +2757,7 @@ mod tests {
             -->
             <input id="native-unchecked" type="checkbox" checked="false">
             <div id="aria-false" role="option" aria-selected="false">Not selected</div>
+            <button id="current-false" aria-current="false">Not current</button>
             <div id="selected-false" role="option" selected="false">Not selected</div>
             "#,
             DocumentConfig::default(),
@@ -2768,10 +2771,12 @@ mod tests {
         assert!(selected("#pressed"));
         assert!(selected("#checked"));
         assert!(selected("#selected"));
+        assert!(selected("#current-page"));
         assert!(selected("#native"));
         assert!(!selected("#plain"));
         assert!(!selected("#native-unchecked"));
         assert!(!selected("#aria-false"));
+        assert!(!selected("#current-false"));
         assert!(!selected("#selected-false"));
     }
 
