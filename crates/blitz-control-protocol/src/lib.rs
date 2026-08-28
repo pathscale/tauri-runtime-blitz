@@ -205,6 +205,118 @@ pub struct SnapshotRequest {
     pub include_computed_style: bool,
 }
 
+/// A node's live border box, encoded on the wire as `[x, y, width, height]`.
+///
+/// Named fields keep consumers out of positional indexing while the custom
+/// array conversion preserves compatibility with existing inspectors.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "[f64; 4]", into = "[f64; 4]")]
+pub struct LayoutBounds {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl From<[f64; 4]> for LayoutBounds {
+    fn from([x, y, width, height]: [f64; 4]) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+}
+
+impl From<LayoutBounds> for [f64; 4] {
+    fn from(bounds: LayoutBounds) -> Self {
+        [bounds.x, bounds.y, bounds.width, bounds.height]
+    }
+}
+
+/// A two-dimensional layout size, encoded as `[width, height]`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "[f64; 2]", into = "[f64; 2]")]
+pub struct LayoutSize {
+    pub width: f64,
+    pub height: f64,
+}
+
+impl From<[f64; 2]> for LayoutSize {
+    fn from([width, height]: [f64; 2]) -> Self {
+        Self { width, height }
+    }
+}
+
+impl From<LayoutSize> for [f64; 2] {
+    fn from(size: LayoutSize) -> Self {
+        [size.width, size.height]
+    }
+}
+
+/// A live scroll offset, encoded as `[x, y]`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "[f64; 2]", into = "[f64; 2]")]
+pub struct LayoutOffset {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl From<[f64; 2]> for LayoutOffset {
+    fn from([x, y]: [f64; 2]) -> Self {
+        Self { x, y }
+    }
+}
+
+impl From<LayoutOffset> for [f64; 2] {
+    fn from(offset: LayoutOffset) -> Self {
+        [offset.x, offset.y]
+    }
+}
+
+/// Computed CSS edges, encoded in shorthand order `[top, right, bottom, left]`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "[f64; 4]", into = "[f64; 4]")]
+pub struct LayoutEdges {
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub left: f64,
+}
+
+impl From<[f64; 4]> for LayoutEdges {
+    fn from([top, right, bottom, left]: [f64; 4]) -> Self {
+        Self {
+            top,
+            right,
+            bottom,
+            left,
+        }
+    }
+}
+
+impl From<LayoutEdges> for [f64; 4] {
+    fn from(edges: LayoutEdges) -> Self {
+        [edges.top, edges.right, edges.bottom, edges.left]
+    }
+}
+
+/// One node's renderer-computed geometry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutDiagnosticRow {
+    pub node_id: u64,
+    pub bounds: LayoutBounds,
+    pub scroll_offset: LayoutOffset,
+    pub client_size: LayoutSize,
+    pub scroll_size: LayoutSize,
+    pub scroll_range: LayoutSize,
+    pub border: LayoutEdges,
+    pub padding: LayoutEdges,
+    pub content_size: LayoutSize,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", content = "params", rename_all = "camelCase")]
 pub enum AgentAction {
@@ -323,7 +435,7 @@ pub struct DebugSnapshot {
     pub active_window: Option<String>,
     pub active_element: Option<u64>,
     pub dom: Option<serde_json::Value>,
-    pub layout: Option<serde_json::Value>,
+    pub layout: Option<Vec<LayoutDiagnosticRow>>,
     /// Resolved colours per node, when `include_computed_style` was set.
     ///
     /// Only the properties that decide legibility. A full longhand dump for
@@ -1022,6 +1134,65 @@ mod tests {
         assert_eq!(
             decode_response(encode_response(id.clone(), &response).unwrap()).unwrap(),
             (id, response)
+        );
+    }
+
+    #[test]
+    fn typed_layout_row_preserves_the_existing_wire_shape() {
+        let row = LayoutDiagnosticRow {
+            node_id: 7,
+            bounds: LayoutBounds {
+                x: 1.0,
+                y: 2.0,
+                width: 30.0,
+                height: 40.0,
+            },
+            scroll_offset: LayoutOffset { x: 3.0, y: 4.0 },
+            client_size: LayoutSize {
+                width: 30.0,
+                height: 40.0,
+            },
+            scroll_size: LayoutSize {
+                width: 50.0,
+                height: 60.0,
+            },
+            scroll_range: LayoutSize {
+                width: 20.0,
+                height: 20.0,
+            },
+            border: LayoutEdges {
+                top: 1.0,
+                right: 2.0,
+                bottom: 3.0,
+                left: 4.0,
+            },
+            padding: LayoutEdges {
+                top: 5.0,
+                right: 6.0,
+                bottom: 7.0,
+                left: 8.0,
+            },
+            content_size: LayoutSize {
+                width: 10.0,
+                height: 11.0,
+            },
+        };
+        let old_wire_shape = serde_json::json!({
+            "nodeId": 7,
+            "bounds": [1.0, 2.0, 30.0, 40.0],
+            "scrollOffset": [3.0, 4.0],
+            "clientSize": [30.0, 40.0],
+            "scrollSize": [50.0, 60.0],
+            "scrollRange": [20.0, 20.0],
+            "border": [1.0, 2.0, 3.0, 4.0],
+            "padding": [5.0, 6.0, 7.0, 8.0],
+            "contentSize": [10.0, 11.0]
+        });
+
+        assert_eq!(serde_json::to_value(&row).unwrap(), old_wire_shape);
+        assert_eq!(
+            serde_json::from_value::<LayoutDiagnosticRow>(old_wire_shape).unwrap(),
+            row
         );
     }
 
