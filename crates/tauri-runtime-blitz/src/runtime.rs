@@ -1226,6 +1226,26 @@ impl<T: UserEvent> RuntimeApplication<T> {
             }
             AgentAction::Input(input) => self.perform_agent_input(input)?,
         }
+
+        /*
+         * An acknowledged action includes its synchronous application result.
+         *
+         * DOM event handlers enqueue Solid's reactive work on the document
+         * poll hook. Returning before that hook runs makes the next Inspect
+         * observe the tree from before the click or input, and tight QA loops
+         * can keep reading that stale tree until the client disconnects. Drain
+         * every immediately runnable consequence here; timers and authored
+         * animation frames remain asynchronous and are observed normally.
+         */
+        let document = self
+            .agent_document()
+            .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
+        for _ in 0..100 {
+            if !document.poll(None) {
+                break;
+            }
+        }
+        document.inner_mut().resolve(0.0);
         Ok(())
     }
 
