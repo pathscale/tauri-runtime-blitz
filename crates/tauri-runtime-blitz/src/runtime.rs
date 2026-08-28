@@ -40,8 +40,9 @@ use winit::platform::macos::{ApplicationHandlerExtMacOS, WindowAttributesMacOS};
 use crate::agent_control_server::CONTROL_TEST_LOCK;
 #[cfg(all(feature = "diagnostics", unix))]
 use crate::control_protocol::{
-    DebugSnapshot, DiagnosticsRequest, FrameMetrics, FrameWindowMetrics, RendererMetrics,
-    RevisionSet, ScriptMetrics, ScriptSource, SnapshotCost, SnapshotRequest, TimingStats,
+    DebugSnapshot, DiagnosticsRequest, FrameMetrics, FrameWindowMetrics, LayoutBounds,
+    LayoutDiagnosticRow, LayoutEdges, LayoutOffset, LayoutSize, RendererMetrics, RevisionSet,
+    ScriptMetrics, ScriptSource, SnapshotCost, SnapshotRequest, TimingStats,
 };
 use crate::window_dispatch::{BlitzWindowDispatcher, NativeWindowState};
 use crate::{
@@ -155,7 +156,7 @@ fn diagnostic_style_row(
 fn diagnostic_layout_row(
     document: &blitz_dom::BaseDocument,
     node: &SemanticNode,
-) -> Option<serde_json::Value> {
+) -> Option<LayoutDiagnosticRow> {
     let bounds = node.bounds?;
     let dom_node = document.get_node(NodeId::from_u64(node.id))?;
     let layout = dom_node.final_layout();
@@ -189,25 +190,25 @@ fn diagnostic_layout_row(
     // Verified against a zoomed live scroller where the raw offset exceeded
     // the unzoomed range by exactly the zoom factor.
     let scroll_offset = dom_node.scroll_offset();
-    Some(serde_json::json!({
-        "nodeId": node.id,
-        "bounds": bounds,
-        "scrollOffset": [
-            unzoom(scroll_offset.x as f32),
-            unzoom(scroll_offset.y as f32)
-        ],
-        "clientSize": [
-            unzoom(layout.size.width),
-            unzoom(layout.size.height)
-        ],
-        "scrollSize": [
-            unzoom(layout.size.width + layout.scroll_width()),
-            unzoom(layout.size.height + layout.scroll_height())
-        ],
-        "scrollRange": [
-            unzoom(layout.scroll_width()),
-            unzoom(layout.scroll_height())
-        ],
+    Some(LayoutDiagnosticRow {
+        node_id: node.id,
+        bounds: LayoutBounds::from(bounds),
+        scroll_offset: LayoutOffset {
+            x: f64::from(unzoom(scroll_offset.x as f32)),
+            y: f64::from(unzoom(scroll_offset.y as f32)),
+        },
+        client_size: LayoutSize {
+            width: f64::from(unzoom(layout.size.width)),
+            height: f64::from(unzoom(layout.size.height)),
+        },
+        scroll_size: LayoutSize {
+            width: f64::from(unzoom(layout.size.width + layout.scroll_width())),
+            height: f64::from(unzoom(layout.size.height + layout.scroll_height())),
+        },
+        scroll_range: LayoutSize {
+            width: f64::from(unzoom(layout.scroll_width())),
+            height: f64::from(unzoom(layout.scroll_height())),
+        },
         // Border and padding, so a box that renders taller than it was asked
         // for can be attributed instead of guessed at.
         //
@@ -220,37 +221,37 @@ fn diagnostic_layout_row(
         // computed, which is exactly the guessing this replaces.
         //
         // Edge order matches CSS shorthand: top, right, bottom, left.
-        "border": [
-            unzoom(layout.border.top),
-            unzoom(layout.border.right),
-            unzoom(layout.border.bottom),
-            unzoom(layout.border.left)
-        ],
-        "padding": [
-            unzoom(layout.padding.top),
-            unzoom(layout.padding.right),
-            unzoom(layout.padding.bottom),
-            unzoom(layout.padding.left)
-        ],
+        border: LayoutEdges {
+            top: f64::from(unzoom(layout.border.top)),
+            right: f64::from(unzoom(layout.border.right)),
+            bottom: f64::from(unzoom(layout.border.bottom)),
+            left: f64::from(unzoom(layout.border.left)),
+        },
+        padding: LayoutEdges {
+            top: f64::from(unzoom(layout.padding.top)),
+            right: f64::from(unzoom(layout.padding.right)),
+            bottom: f64::from(unzoom(layout.padding.bottom)),
+            left: f64::from(unzoom(layout.padding.left)),
+        },
         // The content box, which is what an author's `height` sets under the
         // default `content-box` sizing. `clientSize` above is the border box.
-        "contentSize": [
-            unzoom(
+        content_size: LayoutSize {
+            width: f64::from(unzoom(
                 layout.size.width
                     - layout.border.left
                     - layout.border.right
                     - layout.padding.left
-                    - layout.padding.right
-            ),
-            unzoom(
+                    - layout.padding.right,
+            )),
+            height: f64::from(unzoom(
                 layout.size.height
                     - layout.border.top
                     - layout.border.bottom
                     - layout.padding.top
-                    - layout.padding.bottom
-            )
-        ]
-    }))
+                    - layout.padding.bottom,
+            )),
+        },
+    })
 }
 
 thread_local! {
@@ -1103,12 +1104,10 @@ impl<T: UserEvent> RuntimeApplication<T> {
             .include_dom
             .then(|| serde_json::to_value(&nodes).unwrap_or(serde_json::Value::Null));
         let layout = request.include_layout.then(|| {
-            serde_json::Value::Array(
-                nodes
-                    .iter()
-                    .filter_map(|node| diagnostic_layout_row(&inner, node))
-                    .collect(),
-            )
+            nodes
+                .iter()
+                .filter_map(|node| diagnostic_layout_row(&inner, node))
+                .collect()
         });
         /*
          * Resolved colours, folded into the layout rows.
@@ -2996,10 +2995,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(row["scrollOffset"][1], 60.0);
-        assert_eq!(row["clientSize"][1], 100.0);
-        assert!(row["scrollSize"][1].as_f64().unwrap() >= 100.0);
-        assert!(row["scrollRange"][1].as_f64().unwrap() >= 0.0);
+        assert_eq!(row.scroll_offset.y, 60.0);
+        assert_eq!(row.client_size.height, 100.0);
+        assert!(row.scroll_size.height >= 100.0);
+        assert!(row.scroll_range.height >= 0.0);
     }
 
     #[cfg(all(feature = "agent-control", unix))]
