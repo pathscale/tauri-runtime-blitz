@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tauri-runtime = "=2.11.3"
+tauri-runtime = "2"

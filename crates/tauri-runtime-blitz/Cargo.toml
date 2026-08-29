@@ -12,9 +12,9 @@ repository.workspace = true
 anyrender_vello = { package = "ps-anyrender-vello", version = "^0.14.0" }
 anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", version = "^0.10.0", optional = true }
 style = { version = "0.20.0", package = "stylo" }
-blitz-dom = { package = "ps-blitz-dom", version = "^0.3.1", optional = true }
-blitz-script = { package = "ps-blitz-script", version = "^0.3.1", features = ["system-fonts"] }
-blitz-control-protocol = { path = "../blitz-control-protocol", version = "^0.1.17", optional = true }
+blitz-dom = { package = "ps-blitz-dom", version = "^0.3.4", optional = true }
+blitz-script = { package = "ps-blitz-script", version = "^0.3.4", features = ["system-fonts"] }
+blitz-control-protocol = { path = "../blitz-control-protocol", version = "^0.1.18", optional = true }
 anyrender = { package = "ps-anyrender", version = "^0.13.0" }
 # Offscreen capture, behind `diagnostics` so a shipping build carries neither.
 #
@@ -24,12 +24,12 @@ anyrender = { package = "ps-anyrender", version = "^0.13.0" }
 # same `blitz-paint` entry point the window uses, so what it returns is the
 # real frame rather than a second opinion about it.
 anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.0", optional = true }
-blitz-paint = { package = "ps-blitz-paint", version = "^0.3.1", optional = true }
+blitz-paint = { package = "ps-blitz-paint", version = "^0.3.4", optional = true }
 base64 = { version = "0.22", optional = true }
 peniko = "0.6"
 
-blitz-shell = { package = "ps-blitz-shell", version = "^0.3.0-beta.6", default-features = false, features = ["clipboard", "svg"] }
-blitz-traits = { package = "ps-blitz-traits", version = "^0.3.1", optional = true }
+blitz-shell = { package = "ps-blitz-shell", version = "^0.3.4", default-features = false, features = ["clipboard", "svg"] }
+blitz-traits = { package = "ps-blitz-traits", version = "^0.3.4", optional = true }
 http = "1"
 endpoint-libs = { version = "2.1.5", default-features = false, features = ["agent-control"], optional = true }
 keyboard-types = { version = "0.7", optional = true }
@@ -37,11 +37,11 @@ libc = "0.2"
 raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-tauri = { version = "=2.11.5", default-features = false }
-tauri-runtime = "=2.11.3"
-tauri-utils = "=2.9.3"
+tauri = { version = "2", default-features = false }
+tauri-runtime = "2"
+tauri-utils = "2"
 url = "2"
-winit = "=0.31.0-beta.2"
+winit = "0.31.0-beta.2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync"], optional = true }
 
 [features]
@@ -71,7 +71,7 @@ devtools = ["tauri-runtime/devtools"]
 macos-private-api = ["tauri/macos-private-api", "tauri-runtime/macos-private-api"]
 
 [dev-dependencies]
-tauri = { version = "=2.11.5", default-features = false, features = ["test"] }
+tauri = { version = "2", default-features = false, features = ["test"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 window-vibrancy = "0.8.0"
