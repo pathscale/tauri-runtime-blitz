@@ -6,18 +6,15 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use endpoint_libs::libs::ws::MessageStream;
-#[cfg(test)]
-use endpoint_libs::libs::ws::WireMessage;
 use endpoint_libs::libs::ws::mcp_wire::{INVALID_REQUEST, JsonRpcError};
 use endpoint_libs::libs::ws::transport::{TransportStream, framed_json};
+use endpoint_libs::libs::ws::{MessageStream, StreamError, WireMessage};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
-#[cfg(feature = "diagnostics")]
-use crate::control_protocol::DiagnosticsRequest;
 use crate::control_protocol::{
-    AgentControlRequest, DebugDescriptor, DebugResponse, IncomingRequest, decode_incoming,
+    AgentControlRequest, DebugDescriptor, DebugEvent, DebugResponse, DebugStream,
+    DiagnosticsRequest, IncomingRequest, decode_incoming, encode_diagnostics_event,
     encode_initialize_response, encode_response, encode_rpc_error, encode_tools_list_response,
     peek_request_id,
 };
@@ -73,6 +70,24 @@ impl AgentControlServer {
     /// application, which is what lets a QA sweep run with no display server
     /// and still answer questions that require clicking.
     pub fn start(bridge: ControlBridge) -> io::Result<Self> {
+        Self::start_inner(bridge, None)
+    }
+
+    /// Start with a bounded latest-value diagnostic event source.
+    ///
+    /// A watch receiver is deliberate: a slow inspector needs the newest
+    /// revision, not an ever-growing queue of every frame it failed to read.
+    pub fn start_with_events(
+        bridge: ControlBridge,
+        events: watch::Receiver<Option<DebugEvent>>,
+    ) -> io::Result<Self> {
+        Self::start_inner(bridge, Some(events))
+    }
+
+    fn start_inner(
+        bridge: ControlBridge,
+        events: Option<watch::Receiver<Option<DebugEvent>>>,
+    ) -> io::Result<Self> {
         let instance_id = instance_id();
         let descriptor_path = descriptor_path(&instance_id);
         let socket_path = descriptor_path.with_extension("sock");
@@ -99,7 +114,7 @@ impl AgentControlServer {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let thread = thread::Builder::new()
             .name("blitz-agent-control".into())
-            .spawn(move || run(listener, bridge, shutdown_rx))?;
+            .spawn(move || run(listener, bridge, events, shutdown_rx))?;
 
         Ok(Self {
             descriptor_path,
@@ -158,6 +173,7 @@ impl Drop for AgentControlServer {
 fn run(
     listener: std::os::unix::net::UnixListener,
     bridge: ControlBridge,
+    events: Option<watch::Receiver<Option<DebugEvent>>>,
     shutdown: oneshot::Receiver<()>,
 ) {
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
@@ -178,8 +194,9 @@ fn run(
                 accepted = listener.accept() => match accepted {
                     Ok((stream, _)) => {
                         let bridge = Arc::clone(&bridge);
+                        let events = events.clone();
                         tokio::task::spawn_local(async move {
-                            handle_connection(stream, bridge).await;
+                            handle_connection(stream, bridge, events).await;
                         });
                     }
                     Err(_) => break,
@@ -189,9 +206,65 @@ fn run(
     });
 }
 
-async fn handle_connection(stream: UnixStream, bridge: ControlBridge) {
+enum ConnectionInput {
+    Message(Option<Result<WireMessage, StreamError>>),
+    Event(Result<(), watch::error::RecvError>),
+}
+
+fn stream_wants_event(streams: &[DebugStream], event: &DebugEvent) -> bool {
+    match event {
+        DebugEvent::Snapshot(_) => streams.contains(&DebugStream::Snapshots),
+        DebugEvent::Metrics(_) => streams.contains(&DebugStream::Metrics),
+        DebugEvent::Console(_) => streams.contains(&DebugStream::Console),
+        DebugEvent::RuntimeError(_) => streams.contains(&DebugStream::RuntimeErrors),
+        DebugEvent::PaintCommitted { .. } => streams.contains(&DebugStream::Paint),
+    }
+}
+
+async fn handle_connection(
+    stream: UnixStream,
+    bridge: ControlBridge,
+    mut events: Option<watch::Receiver<Option<DebugEvent>>>,
+) {
     let mut stream = TransportStream::new(framed_json(stream));
-    while let Some(message) = stream.recv().await {
+    let mut observed = Vec::<DebugStream>::new();
+    loop {
+        let input = if observed.is_empty() || events.is_none() {
+            ConnectionInput::Message(stream.recv().await)
+        } else {
+            let receiver = events.as_mut().expect("checked above");
+            tokio::select! {
+                message = stream.recv() => ConnectionInput::Message(message),
+                changed = receiver.changed() => ConnectionInput::Event(changed),
+            }
+        };
+
+        let message = match input {
+            ConnectionInput::Event(changed) => {
+                if changed.is_err() {
+                    events = None;
+                    continue;
+                }
+                let Some(event) = events
+                    .as_ref()
+                    .and_then(|receiver| receiver.borrow().clone())
+                else {
+                    continue;
+                };
+                if !stream_wants_event(&observed, &event) {
+                    continue;
+                }
+                let Ok(frame) = encode_diagnostics_event(&event) else {
+                    continue;
+                };
+                if stream.send(frame).await.is_err() {
+                    break;
+                }
+                continue;
+            }
+            ConnectionInput::Message(Some(message)) => message,
+            ConnectionInput::Message(None) => break,
+        };
         let response = match message {
             Ok(message) => {
                 // Recovered before the typed decode consumes the frame, so a
@@ -221,6 +294,19 @@ async fn handle_connection(stream: UnixStream, bridge: ControlBridge) {
                     // collection is feature-gated. A build without it answers
                     // the caller instead of failing to compile the arm, which
                     // is the whole reason the types are not gated.
+                    Ok(IncomingRequest::Diagnostics {
+                        id,
+                        request: DiagnosticsRequest::Observe { streams },
+                    }) => {
+                        observed = streams;
+                        // Arming observation establishes a revision baseline.
+                        // Do not immediately replay a paint that happened
+                        // before the action the caller is about to drive.
+                        if let Some(receiver) = events.as_mut() {
+                            receiver.borrow_and_update();
+                        }
+                        encode_response(id, &DebugResponse::Ack)
+                    }
                     Ok(IncomingRequest::Diagnostics {
                         id,
                         request: _request,
@@ -381,8 +467,8 @@ mod tests {
     };
     #[cfg(feature = "diagnostics")]
     use crate::control_protocol::{
-        DebugSnapshot, DiagnosticsRequest, RendererMetrics, RevisionSet, SnapshotRequest,
-        encode_diagnostics_request,
+        DebugEvent, DebugSnapshot, DebugStream, DiagnosticsRequest, RendererMetrics, RevisionSet,
+        SnapshotRequest, decode_diagnostics_event, encode_diagnostics_request,
     };
 
     #[tokio::test(flavor = "current_thread")]
@@ -516,6 +602,44 @@ mod tests {
                     ..Default::default()
                 })
             )
+        );
+    }
+
+    #[cfg(feature = "diagnostics")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn observe_pushes_only_requested_latest_value_events() {
+        let _guard = CONTROL_TEST_LOCK.lock().await;
+        let bridge: ControlBridge = Arc::new(|_request| {
+            panic!("observe is connection-local and must not reach the UI bridge")
+        });
+        let (events, receiver) = watch::channel(None);
+        let server = AgentControlServer::start_with_events(bridge, receiver).unwrap();
+        let stream = UnixStream::connect(server.socket_path()).await.unwrap();
+        let mut stream = TransportStream::new(framed_json(stream));
+        let id = JsonRpcId::Number(92);
+
+        stream
+            .send(
+                encode_diagnostics_request(
+                    id.clone(),
+                    &DiagnosticsRequest::Observe {
+                        streams: vec![DebugStream::Paint],
+                    },
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            decode_response(stream.recv().await.unwrap().unwrap()).unwrap(),
+            (id, DebugResponse::Ack)
+        );
+
+        let event = DebugEvent::PaintCommitted { revision: 7 };
+        events.send_replace(Some(event.clone()));
+        assert_eq!(
+            decode_diagnostics_event(stream.recv().await.unwrap().unwrap()).unwrap(),
+            event
         );
     }
 

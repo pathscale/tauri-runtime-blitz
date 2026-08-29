@@ -178,6 +178,14 @@ pub enum DebugEvent {
     Metrics(RendererMetrics),
     Console(ConsoleEntry),
     RuntimeError(RuntimeErrorEntry),
+    /// A real window frame completed after style, layout and paint.
+    ///
+    /// The event carries only a monotonic revision. Consumers pull a snapshot
+    /// or capture if they need one; pushing images or trees on every frame
+    /// would turn observation into an unbounded second renderer workload.
+    PaintCommitted {
+        revision: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -195,6 +203,7 @@ pub enum DebugStream {
     Metrics,
     Console,
     RuntimeErrors,
+    Paint,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1131,6 +1140,12 @@ mod tests {
         let event = AgentControlEvent::TreeChanged { revision: 12 };
         assert_eq!(
             decode_agent_event(encode_agent_event(&event).unwrap()).unwrap(),
+            event
+        );
+
+        let event = DebugEvent::PaintCommitted { revision: 13 };
+        assert_eq!(
+            decode_diagnostics_event(encode_diagnostics_event(&event).unwrap()).unwrap(),
             event
         );
     }
