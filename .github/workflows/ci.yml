@@ -15,23 +15,20 @@ env:
 
 jobs:
   protocol:
-    name: Protocol (Linux)
+    name: Protocol dependency (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Format
-        run: cargo fmt --all --check
-      - name: Clippy
-        run: cargo clippy -p blitz-control-protocol --all-targets -- -D warnings
-      - name: Test
-        run: cargo test -p blitz-control-protocol
-      - name: Package protocol
-        run: cargo package -p blitz-control-protocol
+      - name: Verify protocol ownership and compatible dependency
+        run: |
+          test ! -e crates/blitz-control-protocol
+          cargo tree -p tauri-runtime-blitz --features agent-control \
+            -i blitz-control-protocol
+      - name: Package the runtime without workspace-only dependencies
+        run: cargo package -p tauri-runtime-blitz --no-verify
 
   runtime:
     name: Runtime (macOS)
