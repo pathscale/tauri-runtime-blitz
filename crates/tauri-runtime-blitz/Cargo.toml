@@ -14,7 +14,7 @@ anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", version = "^0.
 style = { version = "0.20.0", package = "stylo" }
 blitz-dom = { package = "ps-blitz-dom", version = "^0.3.1", optional = true }
 blitz-script = { package = "ps-blitz-script", version = "^0.3.1", features = ["system-fonts"] }
-blitz-control-protocol = { path = "../blitz-control-protocol", version = "^0.1.16", optional = true }
+blitz-control-protocol = { path = "../blitz-control-protocol", version = "^0.1.17", optional = true }
 anyrender = { package = "ps-anyrender", version = "^0.13.0" }
 # Offscreen capture, behind `diagnostics` so a shipping build carries neither.
 #

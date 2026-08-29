@@ -126,6 +126,16 @@ impl AgentControlServer {
         &self.descriptor_path
     }
 
+    /// Reacquire the sampling session after an embedder changes permission.
+    ///
+    /// The server can start before application settings or CLI overrides are
+    /// loaded. In that order `_sampling` begins as `None`; merely granting
+    /// permission later does not mutate an already-running server, so every
+    /// diagnostic snapshot keeps reporting `script: null` until restart.
+    pub(crate) fn refresh_deep_profiling(&mut self) {
+        self._sampling = blitz_shell::begin_deep_profiling();
+    }
+
     #[cfg(test)]
     fn socket_path(&self) -> &Path {
         &self.socket_path
@@ -552,6 +562,7 @@ mod tests {
                         include_dom: true,
                         include_layout: false,
                         include_computed_style: false,
+                        node_ids: Vec::new(),
                     }),
                 )
                 .unwrap(),

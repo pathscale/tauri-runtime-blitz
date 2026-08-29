@@ -203,6 +203,10 @@ pub struct SnapshotRequest {
     pub include_dom: bool,
     pub include_layout: bool,
     pub include_computed_style: bool,
+    /// Restrict DOM, layout, and computed-style collection to these nodes.
+    /// Empty preserves the full-snapshot behavior used by inspection reports.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub node_ids: Vec<u64>,
 }
 
 /// A node's live border box, encoded on the wire as `[x, y, width, height]`.
@@ -466,6 +470,13 @@ pub struct AgentSnapshot {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SemanticNode {
+    /// The stable DOM identity supplied by the application, when present.
+    ///
+    /// This is deliberately separate from `id`: `id` is Blitz's ephemeral
+    /// node handle and may change whenever the element remounts. QA selectors
+    /// need the authored HTML `id` so a test keeps targeting the same control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dom_id: Option<String>,
     pub id: u64,
     pub parent: Option<u64>,
     pub role: String,
@@ -1201,6 +1212,31 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<LayoutDiagnosticRow>(old_wire_shape).unwrap(),
             row
+        );
+    }
+
+    #[test]
+    fn semantic_node_keeps_authored_dom_identity_separate_from_node_handle() {
+        let node = SemanticNode {
+            dom_id: Some("settings-save".into()),
+            id: 42,
+            parent: None,
+            role: "button".into(),
+            name: "Save settings".into(),
+            value: None,
+            enabled: true,
+            visible: true,
+            selected: false,
+            bounds: Some([1.0, 2.0, 30.0, 20.0]),
+            slot: Some("button".into()),
+        };
+
+        let encoded = serde_json::to_value(&node).unwrap();
+        assert_eq!(encoded["domId"], "settings-save");
+        assert_eq!(encoded["id"], 42);
+        assert_eq!(
+            serde_json::from_value::<SemanticNode>(encoded).unwrap(),
+            node
         );
     }
 
