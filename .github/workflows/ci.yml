@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -40,8 +40,11 @@ jobs:
     # be exercised again, and a check expected to be red is one nobody reads.
     runs-on: namespace-profile-agency-tahoe
     timeout-minutes: 30
+    defaults:
+      run:
+        shell: zsh -eo pipefail {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
