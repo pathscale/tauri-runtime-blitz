@@ -129,6 +129,7 @@ fn diagnostic_style_row(
      * read it is the entire reason the field exists.
      */
     let radius = format!("{:?}", styles.get_border().border_top_left_radius.0.width);
+    let font_size = styles.clone_font_size().computed_size().px();
 
     Some(serde_json::json!({
         "nodeId": node.id,
@@ -136,6 +137,7 @@ fn diagnostic_style_row(
         "backgroundColor": hex(
             styles.clone_background_color().resolve_to_absolute(&current),
         ),
+        "fontSize": format!("{font_size}px"),
         "opacity": styles.clone_opacity(),
         /*
          * The corner, as the renderer resolved it.
@@ -355,6 +357,22 @@ pub fn apply_runtime_debug_options(
     // before the answer could be yes, and collection never began.
     set_deep_profiling_permitted(options.effective_deep_profiling());
     set_agent_control_enabled(options.inspection_and_agent_control)?;
+    // The listener may predate this permission change. Refresh its session in
+    // place; otherwise a server created while profiling was off holds `None`
+    // forever and diagnostics silently return `script: null` after the owner
+    // turns profiling on.
+    if options.inspection_and_agent_control {
+        let runtime = AGENT_CONTROL_RUNTIME
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| std::io::Error::other("the Blitz runtime is not initialized"))?;
+        if let Some(server) = runtime.lock().unwrap().server.as_mut() {
+            server.refresh_deep_profiling();
+        }
+    }
     Ok(())
 }
 
@@ -703,6 +721,8 @@ struct RuntimeApplication<T: UserEvent> {
     agent_pointer: (f32, f32),
     #[cfg(all(feature = "agent-control", unix))]
     agent_buttons: MouseEventButtons,
+    #[cfg(all(feature = "diagnostics", unix))]
+    capture_surface: Option<CaptureSurface>,
 }
 
 impl<T: UserEvent> RuntimeApplication<T> {
@@ -768,6 +788,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                     include_dom: false,
                     include_layout: false,
                     include_computed_style: false,
+                    node_ids: Vec::new(),
                 })
                 .map(|snapshot| DebugResponse::Metrics(snapshot.metrics))
                 .unwrap_or_else(DebugResponse::Error),
@@ -776,6 +797,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                     include_dom: false,
                     include_layout: false,
                     include_computed_style: false,
+                    node_ids: Vec::new(),
                 })
                 .map(|snapshot| DebugResponse::Idle(snapshot.revisions))
                 .unwrap_or_else(DebugResponse::Error),
@@ -808,10 +830,91 @@ impl<T: UserEvent> RuntimeApplication<T> {
         &mut self,
         request: blitz_control_protocol::CaptureRequest,
     ) -> Result<blitz_control_protocol::CapturedImage, DebugError> {
-        let document = self
-            .agent_document()
+        let Self {
+            blitz,
+            capture_surface,
+            ..
+        } = self;
+        let document = blitz
+            .get_mut()
+            .windows
+            .values_mut()
+            .find_map(|view| view.try_downcast_doc_mut::<ScriptDocument>())
             .ok_or_else(|| debug_error("documentUnavailable", "no active script document"))?;
-        capture_document(document, request)
+        capture_document_with_surface(document, request, capture_surface)
+    }
+}
+
+/// The live inspector's reusable offscreen surface.
+///
+/// A capture used to construct this whole renderer for every frame. Besides
+/// reallocating the viewport-sized RGBA buffer, that threw away the CPU text
+/// renderer's glyph resources, so a stability assertion shaped and rasterised
+/// every label four times. The surface belongs to one runtime and is resized
+/// only when the window or requested scale changes.
+#[cfg(all(feature = "diagnostics", unix))]
+struct CaptureSurface {
+    width: u32,
+    height: u32,
+    renderer: anyrender_vello_cpu::VelloCpuImageRenderer,
+    rgba: Vec<u8>,
+}
+
+/// Reusable offscreen renderer for captures of one document.
+///
+/// A headless inspection host asks for several adjacent frames when it checks
+/// visual stability. Reusing this object preserves the CPU renderer's glyph
+/// resources and pixel allocation between those requests instead of rebuilding
+/// an entire renderer for every sample.
+#[cfg(all(feature = "diagnostics", unix))]
+pub struct DocumentCapture {
+    surface: Option<CaptureSurface>,
+}
+
+#[cfg(all(feature = "diagnostics", unix))]
+impl DocumentCapture {
+    pub fn new() -> Self {
+        Self { surface: None }
+    }
+
+    pub fn capture(
+        &mut self,
+        document: &mut ScriptDocument,
+        request: blitz_control_protocol::CaptureRequest,
+    ) -> Result<blitz_control_protocol::CapturedImage, DebugError> {
+        capture_document_with_surface(document, request, &mut self.surface)
+    }
+}
+
+#[cfg(all(feature = "diagnostics", unix))]
+impl Default for DocumentCapture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(all(feature = "diagnostics", unix))]
+impl CaptureSurface {
+    fn new(width: u32, height: u32) -> Self {
+        use anyrender::ImageRenderer as _;
+
+        Self {
+            width,
+            height,
+            renderer: anyrender_vello_cpu::VelloCpuImageRenderer::new(width, height),
+            rgba: Vec::with_capacity((width as usize) * (height as usize) * 4),
+        }
+    }
+
+    fn size_to(&mut self, width: u32, height: u32) {
+        use anyrender::ImageRenderer as _;
+
+        if self.width == width && self.height == height {
+            return;
+        }
+        self.renderer.resize(width, height);
+        self.width = width;
+        self.height = height;
     }
 }
 
@@ -826,6 +929,15 @@ impl<T: UserEvent> RuntimeApplication<T> {
 pub fn capture_document(
     script_document: &mut ScriptDocument,
     request: blitz_control_protocol::CaptureRequest,
+) -> Result<blitz_control_protocol::CapturedImage, DebugError> {
+    DocumentCapture::new().capture(script_document, request)
+}
+
+#[cfg(all(feature = "diagnostics", unix))]
+fn capture_document_with_surface(
+    script_document: &mut ScriptDocument,
+    request: blitz_control_protocol::CaptureRequest,
+    surface: &mut Option<CaptureSurface>,
 ) -> Result<blitz_control_protocol::CapturedImage, DebugError> {
     use anyrender::ImageRenderer;
     use base64::Engine as _;
@@ -892,8 +1004,18 @@ pub fn capture_document(
         }
     };
 
-    let width = ((crop_width * f64::from(scale)).round() as u32).max(1);
-    let height = ((crop_height * f64::from(scale)).round() as u32).max(1);
+    let full_pixel_width = ((f64::from(full_width) * f64::from(scale)).round() as u32).max(1);
+    let full_pixel_height = ((f64::from(full_height) * f64::from(scale)).round() as u32).max(1);
+    // Clamp before painting: a node partly offscreen yields the visible part,
+    // and the regional renderer never allocates pixels that will be discarded.
+    let left = ((crop_x * f64::from(scale)).round().max(0.0) as u32).min(full_pixel_width);
+    let top = ((crop_y * f64::from(scale)).round().max(0.0) as u32).min(full_pixel_height);
+    let width = ((crop_width * f64::from(scale)).round() as u32)
+        .min(full_pixel_width.saturating_sub(left))
+        .max(1);
+    let height = ((crop_height * f64::from(scale)).round() as u32)
+        .min(full_pixel_height.saturating_sub(top))
+        .max(1);
     // A whole window at 8x is gigabytes; refuse rather than exhaust memory
     // on a machine that is probably already running the app under test.
     const MAX_PIXELS: u64 = 64 * 1024 * 1024;
@@ -904,60 +1026,48 @@ pub fn capture_document(
         ));
     }
 
-    /*
-     * Paint the whole document, then cut the region out of the buffer.
-     *
-     * `paint_scene` takes offsets, but they move the scene inside a surface
-     * that is still sized to the full viewport, so drawing a 66x64 button
-     * into a 66x64 target put every pixel of it outside the surface and
-     * returned solid black. Cropping afterwards depends on no such
-     * semantics: whatever the renderer drew for the real window is what
-     * gets cut, which is the property this whole call exists to have.
-     */
-    let full_pixel_width = ((f64::from(full_width) * f64::from(scale)).round() as u32).max(1);
-    let full_pixel_height = ((f64::from(full_height) * f64::from(scale)).round() as u32).max(1);
+    let surface = surface.get_or_insert_with(|| CaptureSurface::new(width, height));
+    surface.size_to(width, height);
+    // `ImageRenderer` retains its scene between calls. A capture is a complete
+    // frame, not an incremental paint, so carrying the previous command list
+    // forward duplicates every shape and makes each sample slower than the
+    // last. Keep reusable renderer resources, but always begin with an empty
+    // scene.
+    surface.renderer.reset();
     let mut document = script_document.inner_mut();
-    let mut renderer =
-        anyrender_vello_cpu::VelloCpuImageRenderer::new(full_pixel_width, full_pixel_height);
-    let mut full_rgba =
-        Vec::with_capacity((full_pixel_width as usize) * (full_pixel_height as usize) * 4);
-    renderer.render_to_vec(
+    surface.renderer.render_to_vec(
         |scene| {
-            blitz_paint::paint_scene(
-                scene,
-                &mut document,
-                f64::from(scale),
-                full_pixel_width,
-                full_pixel_height,
-                0,
-                0,
-            );
+            if node_id.is_some() {
+                blitz_paint::paint_scene_region(
+                    scene,
+                    &mut document,
+                    blitz_paint::PaintRegion::crop(
+                        f64::from(scale),
+                        f64::from(left) / f64::from(scale),
+                        f64::from(top) / f64::from(scale),
+                        width,
+                        height,
+                    ),
+                );
+            } else {
+                blitz_paint::paint_scene(
+                    scene,
+                    &mut document,
+                    f64::from(scale),
+                    width,
+                    height,
+                    0,
+                    0,
+                );
+            }
         },
-        &mut full_rgba,
+        &mut surface.rgba,
     );
-
-    // The crop, clamped to the surface: a node partly offscreen yields the
-    // part that exists rather than an error or a panic.
-    let left = ((crop_x * f64::from(scale)).round().max(0.0) as u32).min(full_pixel_width);
-    let top = ((crop_y * f64::from(scale)).round().max(0.0) as u32).min(full_pixel_height);
-    let width = width.min(full_pixel_width.saturating_sub(left)).max(1);
-    let height = height.min(full_pixel_height.saturating_sub(top)).max(1);
-
-    let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
-    for row in 0..height {
-        let source = (((top + row) as usize) * (full_pixel_width as usize) + left as usize) * 4;
-        let take = (width as usize) * 4;
-        if source + take <= full_rgba.len() {
-            rgba.extend_from_slice(&full_rgba[source..source + take]);
-        } else {
-            rgba.resize(rgba.len() + take, 0);
-        }
-    }
 
     Ok(blitz_control_protocol::CapturedImage {
         width,
         height,
-        rgba_base64: base64::engine::general_purpose::STANDARD.encode(&rgba),
+        rgba_base64: base64::engine::general_purpose::STANDARD.encode(&surface.rgba),
         node_id,
     })
 }
@@ -996,6 +1106,9 @@ impl<T: UserEvent> RuntimeApplication<T> {
             .tree()
             .iter()
             .filter_map(|(id, node)| {
+                if !request.node_ids.is_empty() && !request.node_ids.contains(&id.as_u64()) {
+                    return None;
+                }
                 let element = node.element_data()?;
                 if !dom_chain_is_attached(&inner, id, layout_node_limit)
                     || !layout_chain_is_valid(&inner, id, layout_node_limit)
@@ -1023,6 +1136,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                     semantic_value(element)
                 };
                 Some(SemanticNode {
+                    dom_id: element_attr(element, "id").map(str::to_owned),
                     id: id.as_u64(),
                     parent: semantic_parent(&inner, id, None).map(|id| id.as_u64()),
                     name: semantic_name(element, node, &role),
@@ -1213,7 +1327,13 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 if document.inner().get_node(node_id).is_none() {
                     return Err(debug_error("unknownNode", "node does not exist"));
                 }
-                document.inner_mut().scroll_to_node(node_id);
+                let mut events = Vec::new();
+                document
+                    .inner_mut()
+                    .scroll_to_node_with_events(node_id, |event| events.push(event));
+                for event in events {
+                    document.dispatch_dom_event(event);
+                }
             }
             AgentAction::ScrollBy {
                 node_id,
@@ -1227,9 +1347,15 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 if document.inner().get_node(node_id).is_none() {
                     return Err(debug_error("unknownNode", "node does not exist"));
                 }
+                let mut events = Vec::new();
                 document
                     .inner_mut()
-                    .scroll_nearest_container_by(node_id, delta_x, delta_y);
+                    .scroll_nearest_container_by_with_events(node_id, delta_x, delta_y, |event| {
+                        events.push(event)
+                    });
+                for event in events {
+                    document.dispatch_dom_event(event);
+                }
             }
             AgentAction::Input(input) => self.perform_agent_input(input)?,
         }
@@ -1612,6 +1738,8 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
             agent_pointer: (0.0, 0.0),
             #[cfg(all(feature = "agent-control", unix))]
             agent_buttons: MouseEventButtons::default(),
+            #[cfg(all(feature = "diagnostics", unix))]
+            capture_surface: None,
         };
         runtime_trace("BlitzRuntime::new completed");
         Ok(Self {
@@ -2184,7 +2312,7 @@ fn set_agent_node_value(
 }
 
 #[cfg(all(feature = "agent-control", unix))]
-fn focus_agent_node(
+pub fn focus_agent_node(
     document: &mut ScriptDocument,
     node_id: blitz_dom::NodeId,
 ) -> Result<(), DebugError> {
@@ -2602,6 +2730,7 @@ pub fn inspect_document(
             let value = semantic_value(element);
             let parent = semantic_parent(&inner, id, root).map(|id| id.as_u64());
             Some(SemanticNode {
+                dom_id: element_attr(element, "id").map(str::to_owned),
                 id: id.as_u64(),
                 parent,
                 role,
@@ -3059,6 +3188,102 @@ mod tests {
 
     #[cfg(all(feature = "diagnostics", unix))]
     #[test]
+    fn repeated_live_captures_reuse_one_surface_and_keep_identical_pixels() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+
+        let mut document = ScriptDocument::from_html(
+            "<body style='margin:0;background:transparent'><main style='width:320px;height:200px;background:rgba(24,32,42,.55);color:#f4f5f7'>\
+               <h1>Capture cache</h1><button>Ready</button>\
+             </main></body>",
+            DocumentConfig::default(),
+        );
+        document
+            .inner_mut()
+            .set_viewport(Viewport::new(320, 200, 1.0, ColorScheme::Dark));
+        document.inner_mut().resolve(0.0);
+
+        let mut surface = None;
+        let request = blitz_control_protocol::CaptureRequest::default();
+        let first = capture_document_with_surface(&mut document, request, &mut surface).unwrap();
+        let first_renderer = surface
+            .as_ref()
+            .map(|cached| std::ptr::from_ref(&cached.renderer))
+            .unwrap();
+        let second = capture_document_with_surface(&mut document, request, &mut surface).unwrap();
+        let second_renderer = surface
+            .as_ref()
+            .map(|cached| std::ptr::from_ref(&cached.renderer))
+            .unwrap();
+
+        assert_eq!(first_renderer, second_renderer);
+        assert_eq!(first.width, 320);
+        assert_eq!(first.height, 200);
+        assert_eq!(first.rgba_base64, second.rgba_base64);
+    }
+
+    #[cfg(all(feature = "diagnostics", unix))]
+    #[test]
+    fn node_region_matches_the_same_pixels_cut_from_a_full_document_capture() {
+        use base64::Engine as _;
+        use blitz_traits::shell::{ColorScheme, Viewport};
+
+        let mut document = ScriptDocument::from_html(
+            "<main style='width:320px;height:200px;background:#18202a;padding:24px'>\
+               <button id='target' style='width:96px;height:40px;background:#d24db8;color:#111'>Ready</button>\
+             </main>",
+            DocumentConfig::default(),
+        );
+        document
+            .inner_mut()
+            .set_viewport(Viewport::new(320, 200, 1.0, ColorScheme::Dark));
+        document.inner_mut().resolve(0.0);
+        let (target, left, top) = {
+            let inner = document.inner();
+            let target = inner.query_selector("#target").unwrap().unwrap();
+            let position = inner.get_node(target).unwrap().absolute_position(0.0, 0.0);
+            (
+                target,
+                position.x.round() as usize,
+                position.y.round() as usize,
+            )
+        };
+
+        let mut surface = None;
+        let full = capture_document_with_surface(
+            &mut document,
+            blitz_control_protocol::CaptureRequest::default(),
+            &mut surface,
+        )
+        .unwrap();
+        let node = capture_document_with_surface(
+            &mut document,
+            blitz_control_protocol::CaptureRequest {
+                node_id: Some(target.as_u64()),
+                scale: 1.0,
+            },
+            &mut surface,
+        )
+        .unwrap();
+
+        let full_rgba = base64::engine::general_purpose::STANDARD
+            .decode(full.rgba_base64)
+            .unwrap();
+        let node_rgba = base64::engine::general_purpose::STANDARD
+            .decode(node.rgba_base64)
+            .unwrap();
+        let mut expected = Vec::with_capacity(node_rgba.len());
+        for row in 0..node.height as usize {
+            let start = ((top + row) * full.width as usize + left) * 4;
+            expected.extend_from_slice(&full_rgba[start..start + node.width as usize * 4]);
+        }
+
+        assert!(node.width > 0);
+        assert!(node.height > 0);
+        assert_eq!(node_rgba, expected);
+    }
+
+    #[cfg(all(feature = "diagnostics", unix))]
+    #[test]
     fn diagnostic_layout_reports_scroll_state_without_script_evaluation() {
         let mut document = ScriptDocument::from_html(
             "<section id='scroller' style='height:100px;overflow-y:auto'><div style='height:400px'>tail</div></section>",
@@ -3086,6 +3311,7 @@ mod tests {
         let row = diagnostic_layout_row(
             &inner,
             &SemanticNode {
+                dom_id: Some("scroller".into()),
                 id: scroller.as_u64(),
                 parent: None,
                 role: "generic".into(),
@@ -3104,6 +3330,37 @@ mod tests {
         assert_eq!(row.client_size.height, 100.0);
         assert!(row.scroll_size.height >= 100.0);
         assert!(row.scroll_range.height >= 0.0);
+    }
+
+    #[cfg(all(feature = "diagnostics", unix))]
+    #[test]
+    fn diagnostic_style_reports_resolved_font_size() {
+        let mut document = ScriptDocument::from_html(
+            "<main id='target' style='font-size:1.4375rem'>Readable</main>",
+            DocumentConfig::default(),
+        );
+        document.inner_mut().resolve(0.0);
+        let target = document.inner().query_selector("#target").unwrap().unwrap();
+        let inner = document.inner();
+        let row = diagnostic_style_row(
+            &inner,
+            &SemanticNode {
+                dom_id: Some("target".into()),
+                id: target.as_u64(),
+                parent: None,
+                role: "main".into(),
+                name: "Readable".into(),
+                value: None,
+                enabled: true,
+                visible: true,
+                selected: false,
+                bounds: Some([0.0, 0.0, 100.0, 24.0]),
+                slot: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(row["fontSize"], "23px");
     }
 
     #[cfg(all(feature = "agent-control", unix))]
@@ -3141,10 +3398,20 @@ mod tests {
         assert!(!agent_control_enabled());
         apply_runtime_debug_options(blitz_traits::profiling::DebugOptions {
             inspection_and_agent_control: true,
-            deep_intrusive_profiling: true,
+            deep_intrusive_profiling: false,
         })
         .unwrap();
         assert!(agent_control_enabled());
+        assert!(!deep_profiling_enabled());
+
+        // Enabling profiling after the listener already exists must attach a
+        // consumer to that same server. AZ starts in exactly this order when
+        // its runtime constructs before persisted/CLI debug options are read.
+        apply_runtime_debug_options(blitz_traits::profiling::DebugOptions {
+            inspection_and_agent_control: true,
+            deep_intrusive_profiling: true,
+        })
+        .unwrap();
         assert!(
             deep_profiling_permitted(),
             "the embedder's switch is permission, and it was just granted"

@@ -38,7 +38,9 @@ pub use blitz_control_protocol as control_protocol;
 /// host; reimplementing it is how a harness ends up disagreeing with the
 /// inspector about what a node is called.
 #[cfg(all(feature = "agent-control", unix))]
-pub use runtime::{click_agent_node, hover_agent_node, inspect_document, press_agent_key};
+pub use runtime::{
+    click_agent_node, focus_agent_node, hover_agent_node, inspect_document, press_agent_key,
+};
 mod script_queue;
 pub use script_queue::ScriptQueue;
 mod runtime;
@@ -50,6 +52,8 @@ pub use runtime::{
     BlitzEventLoopProxy, BlitzRuntime, BlitzRuntimeHandle, builder, set_document_factory,
     set_runtime_trace,
 };
+#[cfg(all(feature = "diagnostics", unix))]
+pub use runtime::{DocumentCapture, capture_document, set_diagnostics_handler};
 #[cfg(all(feature = "agent-control", unix))]
 pub use runtime::{
     agent_control_enabled, apply_runtime_debug_options, set_agent_control_enabled,
@@ -60,8 +64,6 @@ pub use runtime::{
     begin_deep_profiling, deep_profiling_enabled, deep_profiling_permitted,
     set_deep_profiling_permitted,
 };
-#[cfg(all(feature = "diagnostics", unix))]
-pub use runtime::{capture_document, set_diagnostics_handler};
 /// Apply reusable macOS window glass without exposing AppKit to embedders.
 #[cfg(target_os = "macos")]
 pub use window_effects::set_window_glass;
