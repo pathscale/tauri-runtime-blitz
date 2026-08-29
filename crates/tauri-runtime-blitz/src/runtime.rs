@@ -129,7 +129,10 @@ fn diagnostic_style_row(
      * read it is the entire reason the field exists.
      */
     let radius = format!("{:?}", styles.get_border().border_top_left_radius.0.width);
+    let border = styles.get_border();
+    let border_width = border.border_top_width.0.to_f64_px();
     let font_size = styles.clone_font_size().computed_size().px();
+    let has_text_content = !dom_node.text_content().trim().is_empty();
 
     Some(serde_json::json!({
         "nodeId": node.id,
@@ -137,7 +140,10 @@ fn diagnostic_style_row(
         "backgroundColor": hex(
             styles.clone_background_color().resolve_to_absolute(&current),
         ),
+        "borderColor": hex(border.border_top_color.resolve_to_absolute(&current)),
+        "borderWidth": format!("{border_width}px"),
         "fontSize": format!("{font_size}px"),
+        "hasTextContent": has_text_content,
         "opacity": styles.clone_opacity(),
         /*
          * The corner, as the renderer resolved it.
@@ -1080,200 +1086,215 @@ impl<T: UserEvent> RuntimeApplication<T> {
     ) -> Result<DebugSnapshot, DebugError> {
         self.agent_revision += 1;
         let revision = self.agent_revision;
-        let started = std::time::Instant::now();
         let document = self
             .agent_document()
             .ok_or_else(|| debug_error("documentUnavailable", "no active script document"))?;
-        let poll_started = std::time::Instant::now();
-        let mut polls = 0u64;
-        for _ in 0..100 {
-            polls += 1;
-            if !document.poll(None) {
-                break;
-            }
+        snapshot_document(document, request, revision)
+    }
+}
+
+/// Collect the same typed diagnostic snapshot from a standalone Blitz document
+/// that the windowed runtime exposes over its control socket.
+///
+/// Headless component hosts own a `ScriptDocument` without a Tauri event loop.
+/// Keeping snapshot collection here gives those hosts the renderer's real DOM,
+/// layout and computed paint data instead of a partial or reimplemented view.
+#[cfg(all(feature = "diagnostics", unix))]
+pub fn snapshot_document(
+    document: &mut ScriptDocument,
+    request: SnapshotRequest,
+    revision: u64,
+) -> Result<DebugSnapshot, DebugError> {
+    let started = std::time::Instant::now();
+    let poll_started = std::time::Instant::now();
+    let mut polls = 0u64;
+    for _ in 0..100 {
+        polls += 1;
+        if !document.poll(None) {
+            break;
         }
-        let poll_ms = poll_started.elapsed().as_secs_f64() * 1_000.0;
-        // This forces a style and layout pass so the snapshot reports current
-        // geometry. It is work the observer caused, so it is reported as snapshot
-        // cost, never as the cost of a frame the application drew.
-        let resolve_started = std::time::Instant::now();
-        document.inner_mut().resolve(0.0);
-        let snapshot_resolve_ms = resolve_started.elapsed().as_secs_f64() * 1_000.0;
-        let inner = document.inner();
-        let layout_node_limit = inner.tree().iter().count();
-        let active_element = inner.get_focussed_node_id().map(|id| id.as_u64());
-        let nodes: Vec<SemanticNode> = inner
-            .tree()
-            .iter()
-            .filter_map(|(id, node)| {
-                if !request.node_ids.is_empty() && !request.node_ids.contains(&id.as_u64()) {
-                    return None;
-                }
-                let element = node.element_data()?;
-                if !dom_chain_is_attached(&inner, id, layout_node_limit)
-                    || !layout_chain_is_valid(&inner, id, layout_node_limit)
-                {
-                    return None;
-                }
-                let rect = inner.get_client_bounding_rect(id);
-                let visible = node_is_visible(&inner, id)
-                    && rect
-                        .as_ref()
-                        .is_some_and(|rect| rect.width > 0.0 && rect.height > 0.0);
-                let role = semantic_role(element);
-                let value = if role == "generic" {
-                    Some(
-                        element
-                            .attrs()
-                            .iter()
-                            .map(|attribute| {
-                                format!("{}={}", attribute.name.local, attribute.value)
-                            })
-                            .collect::<Vec<_>>()
-                            .join(" "),
-                    )
-                } else {
-                    semantic_value(element)
-                };
-                Some(SemanticNode {
-                    dom_id: element_attr(element, "id").map(str::to_owned),
-                    id: id.as_u64(),
-                    parent: semantic_parent(&inner, id, None).map(|id| id.as_u64()),
-                    name: semantic_name(element, node, &role),
-                    role,
-                    value,
-                    enabled: element_attr(element, "disabled").is_none()
-                        && element_attr(element, "aria-disabled") != Some("true"),
-                    visible,
-                    selected: semantic_selected(element),
-                    bounds: rect.and_then(|rect| {
-                        let bounds = [rect.x, rect.y, rect.width, rect.height];
-                        bounds
-                            .iter()
-                            .all(|value| value.is_finite())
-                            .then_some(bounds)
-                    }),
-                    slot: element_attr(element, "data-slot").map(str::to_owned),
-                })
+    }
+    let poll_ms = poll_started.elapsed().as_secs_f64() * 1_000.0;
+    // This forces a style and layout pass so the snapshot reports current
+    // geometry. It is work the observer caused, so it is reported as snapshot
+    // cost, never as the cost of a frame the application drew.
+    let resolve_started = std::time::Instant::now();
+    document.inner_mut().resolve(0.0);
+    let snapshot_resolve_ms = resolve_started.elapsed().as_secs_f64() * 1_000.0;
+    let inner = document.inner();
+    let layout_node_limit = inner.tree().iter().count();
+    let active_element = inner.get_focussed_node_id().map(|id| id.as_u64());
+    let nodes: Vec<SemanticNode> = inner
+        .tree()
+        .iter()
+        .filter_map(|(id, node)| {
+            if !request.node_ids.is_empty() && !request.node_ids.contains(&id.as_u64()) {
+                return None;
+            }
+            let element = node.element_data()?;
+            if !dom_chain_is_attached(&inner, id, layout_node_limit)
+                || !layout_chain_is_valid(&inner, id, layout_node_limit)
+            {
+                return None;
+            }
+            let rect = inner.get_client_bounding_rect(id);
+            let visible = node_is_visible(&inner, id)
+                && rect
+                    .as_ref()
+                    .is_some_and(|rect| rect.width > 0.0 && rect.height > 0.0);
+            let role = semantic_role(element);
+            let value = if role == "generic" {
+                Some(
+                    element
+                        .attrs()
+                        .iter()
+                        .map(|attribute| format!("{}={}", attribute.name.local, attribute.value))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                )
+            } else {
+                semantic_value(element)
+            };
+            Some(SemanticNode {
+                dom_id: element_attr(element, "id").map(str::to_owned),
+                id: id.as_u64(),
+                parent: semantic_parent(&inner, id, None).map(|id| id.as_u64()),
+                name: semantic_name(element, node, &role),
+                role,
+                value,
+                enabled: element_attr(element, "disabled").is_none()
+                    && element_attr(element, "aria-disabled") != Some("true"),
+                visible,
+                selected: semantic_selected(element),
+                bounds: rect.and_then(|rect| {
+                    let bounds = [rect.x, rect.y, rect.width, rect.height];
+                    bounds
+                        .iter()
+                        .all(|value| value.is_finite())
+                        .then_some(bounds)
+                }),
+                slot: element_attr(element, "data-slot").map(str::to_owned),
             })
-            .collect();
-        let total_ms = started.elapsed().as_secs_f64() * 1_000.0;
-        // The runtime keeps one counter and stamps it onto all four revision
-        // fields. Style, layout and paint are not versioned independently
-        // anywhere in blitz, so four copies of one number would claim a
-        // resolution that does not exist. Report the counter once, as the
-        // document revision, and leave the rest at zero.
-        let revisions = RevisionSet {
-            document: revision,
-            style: 0,
-            layout: 0,
-            paint: 0,
-        };
-        // Real per-frame timings, published by blitz-shell from `View::redraw`.
-        // These describe frames the application actually presented. Everything
-        // measured inside this function describes the snapshot collection instead,
-        // and is reported under `snapshot` so the two never get mixed up again.
-        let frame_stats = blitz_shell::latest_frame_stats();
-        let metrics = RendererMetrics {
-            revisions: revisions.clone(),
-            queue_depth: None,
-            invalidations_coalesced: polls.saturating_sub(1),
-            frame: frame_stats.as_ref().map(|stats| FrameMetrics {
-                input_to_present_ms: None,
-                style_ms: None,
-                layout_ms: None,
-                resolve_ms: stats.latest.resolve_ms,
-                scene_ms: stats.latest.paint_ms,
-                submit_ms: None,
-                present_ms: None,
-                renderer_ms: stats.latest.renderer_ms,
-                total_ms: stats.latest.total_ms,
-                age_ms: stats.latest.age_ms,
-            }),
-            frame_window: frame_stats.as_ref().map(|stats| FrameWindowMetrics {
-                frames_total: stats.frames_total,
-                window_frames: stats.window_frames,
-                resolve: timing_stats(stats.resolve),
-                scene: timing_stats(stats.paint),
-                renderer: timing_stats(stats.renderer),
-                total: timing_stats(stats.frame_total),
-                interval: timing_stats(stats.interval),
-                active_fps: stats.active_fps,
-                missed_refreshes: stats.missed_refreshes,
-                display_refresh_hz: stats.display_refresh_hz,
-            }),
-            snapshot: Some(SnapshotCost {
-                poll_ms,
-                resolve_ms: snapshot_resolve_ms,
-                total_ms,
-            }),
-            // The other half of a frame. Everything above this line is the
-            // engine; this is the language runtime the application actually
-            // spends its time in.
-            script: blitz_script::script_stats::latest_script_stats().map(|stats| ScriptMetrics {
-                mean_ms: stats.mean_ms,
-                p95_ms: stats.p95_ms,
-                max_ms: stats.max_ms,
-                window_polls: stats.window_polls,
-                total_polls: stats.total_polls,
-                productive_polls: stats.productive_polls,
-                spent_ms: stats.spent_ms,
-                breakdown: blitz_script::script_stats::work_breakdown()
-                    .into_iter()
-                    .take(12)
-                    .map(|(label, calls, total_ms, worst_ms)| ScriptSource {
-                        label,
-                        calls,
-                        total_ms,
-                        worst_ms,
-                    })
-                    .collect(),
-            }),
-            resident_bytes: resident_bytes(),
-        };
-        let dom = request
-            .include_dom
-            .then(|| serde_json::to_value(&nodes).unwrap_or(serde_json::Value::Null));
-        let layout = request.include_layout.then(|| {
+        })
+        .collect();
+    let total_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    // The runtime keeps one counter and stamps it onto all four revision
+    // fields. Style, layout and paint are not versioned independently
+    // anywhere in blitz, so four copies of one number would claim a
+    // resolution that does not exist. Report the counter once, as the
+    // document revision, and leave the rest at zero.
+    let revisions = RevisionSet {
+        document: revision,
+        style: 0,
+        layout: 0,
+        paint: 0,
+    };
+    // Real per-frame timings, published by blitz-shell from `View::redraw`.
+    // These describe frames the application actually presented. Everything
+    // measured inside this function describes the snapshot collection instead,
+    // and is reported under `snapshot` so the two never get mixed up again.
+    let frame_stats = blitz_shell::latest_frame_stats();
+    let metrics = RendererMetrics {
+        revisions: revisions.clone(),
+        queue_depth: None,
+        invalidations_coalesced: polls.saturating_sub(1),
+        frame: frame_stats.as_ref().map(|stats| FrameMetrics {
+            input_to_present_ms: None,
+            style_ms: None,
+            layout_ms: None,
+            resolve_ms: stats.latest.resolve_ms,
+            scene_ms: stats.latest.paint_ms,
+            submit_ms: None,
+            present_ms: None,
+            renderer_ms: stats.latest.renderer_ms,
+            total_ms: stats.latest.total_ms,
+            age_ms: stats.latest.age_ms,
+        }),
+        frame_window: frame_stats.as_ref().map(|stats| FrameWindowMetrics {
+            frames_total: stats.frames_total,
+            window_frames: stats.window_frames,
+            resolve: timing_stats(stats.resolve),
+            scene: timing_stats(stats.paint),
+            renderer: timing_stats(stats.renderer),
+            total: timing_stats(stats.frame_total),
+            interval: timing_stats(stats.interval),
+            active_fps: stats.active_fps,
+            missed_refreshes: stats.missed_refreshes,
+            display_refresh_hz: stats.display_refresh_hz,
+        }),
+        snapshot: Some(SnapshotCost {
+            poll_ms,
+            resolve_ms: snapshot_resolve_ms,
+            total_ms,
+        }),
+        // The other half of a frame. Everything above this line is the
+        // engine; this is the language runtime the application actually
+        // spends its time in.
+        script: blitz_script::script_stats::latest_script_stats().map(|stats| ScriptMetrics {
+            mean_ms: stats.mean_ms,
+            p95_ms: stats.p95_ms,
+            max_ms: stats.max_ms,
+            window_polls: stats.window_polls,
+            total_polls: stats.total_polls,
+            productive_polls: stats.productive_polls,
+            spent_ms: stats.spent_ms,
+            breakdown: blitz_script::script_stats::work_breakdown()
+                .into_iter()
+                .take(12)
+                .map(|(label, calls, total_ms, worst_ms)| ScriptSource {
+                    label,
+                    calls,
+                    total_ms,
+                    worst_ms,
+                })
+                .collect(),
+        }),
+        resident_bytes: resident_bytes(),
+    };
+    let dom = request
+        .include_dom
+        .then(|| serde_json::to_value(&nodes).unwrap_or(serde_json::Value::Null));
+    let layout = request.include_layout.then(|| {
+        nodes
+            .iter()
+            .filter_map(|node| diagnostic_layout_row(&inner, node))
+            .collect()
+    });
+    /*
+     * Resolved colours, folded into the layout rows.
+     *
+     * This used to answer `computedStyleUnavailable`, which left one class
+     * of bug unanswerable from outside: an element whose *declared* colour
+     * is correct and whose *painted* colour is not. Reading the stylesheet
+     * cannot settle that - the cascade, the custom-property chain and the
+     * `@supports` gating all sit between the two - and neither can a DOM
+     * test environment, which has no cascade at all.
+     *
+     * Only the four that decide legibility, rather than a full style dump:
+     * a snapshot of every longhand for 4,500 nodes is megabytes of JSON
+     * nobody reads, and these are what a "why is this text invisible"
+     * question actually needs.
+     */
+    let computed_style = request.include_computed_style.then(|| {
+        serde_json::Value::Array(
             nodes
                 .iter()
-                .filter_map(|node| diagnostic_layout_row(&inner, node))
-                .collect()
-        });
-        /*
-         * Resolved colours, folded into the layout rows.
-         *
-         * This used to answer `computedStyleUnavailable`, which left one class
-         * of bug unanswerable from outside: an element whose *declared* colour
-         * is correct and whose *painted* colour is not. Reading the stylesheet
-         * cannot settle that - the cascade, the custom-property chain and the
-         * `@supports` gating all sit between the two - and neither can a DOM
-         * test environment, which has no cascade at all.
-         *
-         * Only the four that decide legibility, rather than a full style dump:
-         * a snapshot of every longhand for 4,500 nodes is megabytes of JSON
-         * nobody reads, and these are what a "why is this text invisible"
-         * question actually needs.
-         */
-        let computed_style = request.include_computed_style.then(|| {
-            serde_json::Value::Array(
-                nodes
-                    .iter()
-                    .filter_map(|node| diagnostic_style_row(&inner, node))
-                    .collect(),
-            )
-        });
-        Ok(DebugSnapshot {
-            revisions,
-            active_window: Some("blitz-main".into()),
-            active_element,
-            dom,
-            layout,
-            computed_style,
-            metrics,
-        })
-    }
+                .filter_map(|node| diagnostic_style_row(&inner, node))
+                .collect(),
+        )
+    });
+    Ok(DebugSnapshot {
+        revisions,
+        active_window: Some("blitz-main".into()),
+        active_element,
+        dom,
+        layout,
+        computed_style,
+        metrics,
+    })
+}
 
+impl<T: UserEvent> RuntimeApplication<T> {
     #[cfg(all(feature = "agent-control", unix))]
     fn perform_agent_action(&mut self, action: AgentAction) -> Result<(), DebugError> {
         match action {
@@ -3334,9 +3355,9 @@ mod tests {
 
     #[cfg(all(feature = "diagnostics", unix))]
     #[test]
-    fn diagnostic_style_reports_resolved_font_size() {
+    fn diagnostic_style_reports_resolved_font_and_border() {
         let mut document = ScriptDocument::from_html(
-            "<main id='target' style='font-size:1.4375rem'>Readable</main>",
+            "<main id='target' style='font-size:1.4375rem;border:2px solid #123456'>Readable</main>",
             DocumentConfig::default(),
         );
         document.inner_mut().resolve(0.0);
@@ -3361,6 +3382,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(row["fontSize"], "23px");
+        assert_eq!(row["borderColor"], "#123456ff");
+        assert_eq!(row["borderWidth"], "2px");
+        assert_eq!(row["hasTextContent"], true);
     }
 
     #[cfg(all(feature = "agent-control", unix))]

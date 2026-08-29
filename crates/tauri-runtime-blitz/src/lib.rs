@@ -53,7 +53,7 @@ pub use runtime::{
     set_runtime_trace,
 };
 #[cfg(all(feature = "diagnostics", unix))]
-pub use runtime::{DocumentCapture, capture_document, set_diagnostics_handler};
+pub use runtime::{DocumentCapture, capture_document, set_diagnostics_handler, snapshot_document};
 #[cfg(all(feature = "agent-control", unix))]
 pub use runtime::{
     agent_control_enabled, apply_runtime_debug_options, set_agent_control_enabled,
