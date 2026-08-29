@@ -229,14 +229,15 @@ async fn handle_connection(
     let mut stream = TransportStream::new(framed_json(stream));
     let mut observed = Vec::<DebugStream>::new();
     loop {
-        let input = if observed.is_empty() || events.is_none() {
+        let input = if observed.is_empty() {
             ConnectionInput::Message(stream.recv().await)
-        } else {
-            let receiver = events.as_mut().expect("checked above");
+        } else if let Some(receiver) = events.as_mut() {
             tokio::select! {
                 message = stream.recv() => ConnectionInput::Message(message),
                 changed = receiver.changed() => ConnectionInput::Event(changed),
             }
+        } else {
+            ConnectionInput::Message(stream.recv().await)
         };
 
         let message = match input {
