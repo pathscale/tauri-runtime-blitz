@@ -52,8 +52,8 @@ use crate::{
 use crate::{
     agent_control_server::{AgentControlServer, ControlBridge, ControlBridgeRequest},
     control_protocol::{
-        AgentAction, AgentControlRequest, AgentSnapshot, DebugError, DebugResponse, InputCommand,
-        KeyPhase, Modifiers as ControlModifiers, PointerPhase, SemanticNode,
+        AgentAction, AgentControlRequest, AgentSnapshot, DebugError, DebugEvent, DebugResponse,
+        InputCommand, KeyPhase, Modifiers as ControlModifiers, PointerPhase, SemanticNode,
     },
 };
 #[cfg(all(feature = "agent-control", unix))]
@@ -311,6 +311,7 @@ pub fn set_agent_control_handler(
 #[cfg(all(feature = "agent-control", unix))]
 struct AgentControlRuntime {
     bridge: ControlBridge,
+    events: tokio::sync::watch::Sender<Option<DebugEvent>>,
     server: Option<AgentControlServer>,
 }
 
@@ -329,7 +330,12 @@ pub fn set_agent_control_enabled(enabled: bool) -> std::io::Result<()> {
         .ok_or_else(|| std::io::Error::other("the Blitz runtime is not initialized"))?;
     let mut runtime = runtime.lock().unwrap();
     match (enabled, runtime.server.is_some()) {
-        (true, false) => runtime.server = Some(AgentControlServer::start(runtime.bridge.clone())?),
+        (true, false) => {
+            runtime.server = Some(AgentControlServer::start_with_events(
+                runtime.bridge.clone(),
+                runtime.events.subscribe(),
+            )?)
+        }
         (false, true) => runtime.server = None,
         _ => {}
     }
@@ -723,6 +729,10 @@ struct RuntimeApplication<T: UserEvent> {
     _agent_control: Arc<Mutex<AgentControlRuntime>>,
     #[cfg(all(feature = "agent-control", unix))]
     agent_revision: u64,
+    #[cfg(all(feature = "agent-control", unix))]
+    paint_revision: u64,
+    #[cfg(all(feature = "agent-control", unix))]
+    control_events: tokio::sync::watch::Sender<Option<DebugEvent>>,
     #[cfg(all(feature = "agent-control", unix))]
     agent_pointer: (f32, f32),
     #[cfg(all(feature = "agent-control", unix))]
@@ -1624,9 +1634,19 @@ impl<T: UserEvent> ApplicationHandler for RuntimeApplication<T> {
         window_id: winit::window::WindowId,
         event: WinitWindowEvent,
     ) {
+        #[cfg(all(feature = "agent-control", unix))]
+        let paint_committed = matches!(event, WinitWindowEvent::RedrawRequested);
         self.blitz
             .get_mut()
             .window_event(event_loop, window_id, event);
+        #[cfg(all(feature = "agent-control", unix))]
+        if paint_committed {
+            self.paint_revision = self.paint_revision.saturating_add(1);
+            self.control_events
+                .send_replace(Some(DebugEvent::PaintCommitted {
+                    revision: self.paint_revision,
+                }));
+        }
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -1707,13 +1727,17 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
             main_thread_id: current().id(),
         };
         #[cfg(all(feature = "agent-control", unix))]
-        let agent_control = {
+        let (agent_control, control_events) = {
             let control_context = context.clone();
             let bridge: ControlBridge = Arc::new(move |request| {
                 let (response, receiver) = tokio::sync::oneshot::channel();
                 let _ = control_context.send(RuntimeMessage::Control { request, response });
                 receiver
             });
+            // A watch channel retains only the newest revision. Inspection is
+            // therefore bounded even when a client stalls or an animation
+            // presents much faster than the client can consume notifications.
+            let (event_sender, event_receiver) = tokio::sync::watch::channel(None);
             // The embedder's persisted control state is applied later during Tauri
             // setup. This enable-only rescue must start earlier: when control
             // was switched off, setup is unreachable to the very automation
@@ -1721,18 +1745,22 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
             // application is still booting.
             let server = if std::env::args().any(|arg| arg == "--blitz-control") {
                 Some(
-                    AgentControlServer::start(bridge.clone())
+                    AgentControlServer::start_with_events(bridge.clone(), event_receiver)
                         .map_err(|error| Error::CreateWebview(Box::new(error)))?,
                 )
             } else {
                 None
             };
-            let runtime = Arc::new(Mutex::new(AgentControlRuntime { bridge, server }));
+            let runtime = Arc::new(Mutex::new(AgentControlRuntime {
+                bridge,
+                events: event_sender.clone(),
+                server,
+            }));
             *AGENT_CONTROL_RUNTIME
                 .get_or_init(|| Mutex::new(None))
                 .lock()
                 .unwrap() = Some(Arc::downgrade(&runtime));
-            runtime
+            (runtime, event_sender)
         };
         let blitz = BlitzApplication::new(proxy, blitz_receiver);
         #[cfg(feature = "debug-control")]
@@ -1755,6 +1783,10 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
             _agent_control: agent_control,
             #[cfg(all(feature = "agent-control", unix))]
             agent_revision: 0,
+            #[cfg(all(feature = "agent-control", unix))]
+            paint_revision: 0,
+            #[cfg(all(feature = "agent-control", unix))]
+            control_events,
             #[cfg(all(feature = "agent-control", unix))]
             agent_pointer: (0.0, 0.0),
             #[cfg(all(feature = "agent-control", unix))]
@@ -3410,8 +3442,10 @@ mod tests {
             let _ = sender.send(DebugResponse::Ack);
             receiver
         });
+        let (events, _event_receiver) = tokio::sync::watch::channel(None);
         let runtime = Arc::new(Mutex::new(AgentControlRuntime {
             bridge,
+            events,
             server: None,
         }));
         *AGENT_CONTROL_RUNTIME
