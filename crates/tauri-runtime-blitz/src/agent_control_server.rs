@@ -14,9 +14,9 @@ use tokio::sync::{oneshot, watch};
 
 use crate::control_protocol::{
     AgentControlRequest, DebugDescriptor, DebugEvent, DebugResponse, DebugStream,
-    DiagnosticsRequest, IncomingRequest, decode_incoming, encode_diagnostics_event,
-    encode_initialize_response, encode_response, encode_rpc_error, encode_tools_list_response,
-    peek_request_id,
+    DiagnosticsRequest, IncomingRequest, decode_incoming_value, decode_wire_value,
+    encode_diagnostics_event, encode_initialize_response, encode_response, encode_rpc_error,
+    encode_tools_list_response, peek_value_request_id,
 };
 
 pub enum ControlBridgeRequest {
@@ -268,79 +268,85 @@ async fn handle_connection(
             ConnectionInput::Message(None) => break,
         };
         let response = match message {
-            Ok(message) => {
-                // Recovered before the typed decode consumes the frame, so a
-                // malformed request is answered to the caller rather than to
-                // nobody. See peek_request_id.
-                let request_id = peek_request_id(&message);
-                match decode_incoming(message) {
-                    Ok(IncomingRequest::Initialize { id }) => {
-                        encode_initialize_response(id, env!("CARGO_PKG_VERSION"))
-                    }
-                    Ok(IncomingRequest::Initialized) => continue,
-                    Ok(IncomingRequest::ToolsList { id }) => {
-                        encode_tools_list_response(id, cfg!(feature = "diagnostics"))
-                    }
-                    Ok(IncomingRequest::Agent { id, request }) => {
-                        let response = bridge(ControlBridgeRequest::Agent(request))
-                            .await
-                            .unwrap_or_else(|_| {
-                                DebugResponse::Error(crate::control_protocol::DebugError {
-                                    code: "bridgeClosed".into(),
-                                    message: "the UI-thread control bridge closed".into(),
-                                })
-                            });
-                        encode_response(id, &response)
-                    }
-                    // The protocol defines diagnostics unconditionally; only
-                    // collection is feature-gated. A build without it answers
-                    // the caller instead of failing to compile the arm, which
-                    // is the whole reason the types are not gated.
-                    Ok(IncomingRequest::Diagnostics {
-                        id,
-                        request: DiagnosticsRequest::Observe { streams },
-                    }) => {
-                        observed = streams;
-                        // Arming observation establishes a revision baseline.
-                        // Do not immediately replay a paint that happened
-                        // before the action the caller is about to drive.
-                        if let Some(receiver) = events.as_mut() {
-                            receiver.borrow_and_update();
+            Ok(message) => match decode_wire_value(message) {
+                Ok(value) => {
+                    // Recover the id before typed decoding consumes the parsed
+                    // value. The previous path parsed the complete request once
+                    // for this id and again for the request itself.
+                    let request_id = peek_value_request_id(&value);
+                    match decode_incoming_value(value) {
+                        Ok(IncomingRequest::Initialize { id }) => {
+                            encode_initialize_response(id, env!("CARGO_PKG_VERSION"))
                         }
-                        encode_response(id, &DebugResponse::Ack)
-                    }
-                    Ok(IncomingRequest::Diagnostics {
-                        id,
-                        request: _request,
-                    }) => {
-                        #[cfg(feature = "diagnostics")]
-                        let response = bridge(ControlBridgeRequest::Diagnostics(_request))
-                            .await
-                            .unwrap_or_else(|_| {
+                        Ok(IncomingRequest::Initialized) => continue,
+                        Ok(IncomingRequest::ToolsList { id }) => {
+                            encode_tools_list_response(id, cfg!(feature = "diagnostics"))
+                        }
+                        Ok(IncomingRequest::Agent { id, request }) => {
+                            let response = bridge(ControlBridgeRequest::Agent(request))
+                                .await
+                                .unwrap_or_else(|_| {
+                                    DebugResponse::Error(crate::control_protocol::DebugError {
+                                        code: "bridgeClosed".into(),
+                                        message: "the UI-thread control bridge closed".into(),
+                                    })
+                                });
+                            encode_response(id, &response)
+                        }
+                        // The protocol defines diagnostics unconditionally; only
+                        // collection is feature-gated. A build without it answers
+                        // the caller instead of failing to compile the arm, which
+                        // is the whole reason the types are not gated.
+                        Ok(IncomingRequest::Diagnostics {
+                            id,
+                            request: DiagnosticsRequest::Observe { streams },
+                        }) => {
+                            observed = streams;
+                            // Arming observation establishes a revision baseline.
+                            // Do not immediately replay a paint that happened
+                            // before the action the caller is about to drive.
+                            if let Some(receiver) = events.as_mut() {
+                                receiver.borrow_and_update();
+                            }
+                            encode_response(id, &DebugResponse::Ack)
+                        }
+                        Ok(IncomingRequest::Diagnostics {
+                            id,
+                            request: _request,
+                        }) => {
+                            #[cfg(feature = "diagnostics")]
+                            let response = bridge(ControlBridgeRequest::Diagnostics(_request))
+                                .await
+                                .unwrap_or_else(|_| {
+                                    DebugResponse::Error(crate::control_protocol::DebugError {
+                                        code: "bridgeClosed".into(),
+                                        message: "the UI-thread diagnostics bridge closed".into(),
+                                    })
+                                });
+                            #[cfg(not(feature = "diagnostics"))]
+                            let response =
                                 DebugResponse::Error(crate::control_protocol::DebugError {
-                                    code: "bridgeClosed".into(),
-                                    message: "the UI-thread diagnostics bridge closed".into(),
-                                })
-                            });
-                        #[cfg(not(feature = "diagnostics"))]
-                        let response = DebugResponse::Error(crate::control_protocol::DebugError {
-                            code: "diagnosticsUnavailable".into(),
-                            message: "this build has no diagnostics feature; \
+                                    code: "diagnosticsUnavailable".into(),
+                                    message: "this build has no diagnostics feature; \
                                       rebuild with tauri-runtime-blitz/diagnostics"
-                                .into(),
-                        });
-                        encode_response(id, &response)
+                                        .into(),
+                                });
+                            encode_response(id, &response)
+                        }
+                        Ok(_) => encode_rpc_error(
+                            request_id,
+                            JsonRpcError::new(INVALID_REQUEST, "unsupported protocol request"),
+                        ),
+                        Err(error) => encode_rpc_error(
+                            request_id,
+                            JsonRpcError::new(INVALID_REQUEST, error.to_string()),
+                        ),
                     }
-                    Ok(_) => encode_rpc_error(
-                        request_id,
-                        JsonRpcError::new(INVALID_REQUEST, "unsupported protocol request"),
-                    ),
-                    Err(error) => encode_rpc_error(
-                        request_id,
-                        JsonRpcError::new(INVALID_REQUEST, error.to_string()),
-                    ),
                 }
-            }
+                Err(error) => {
+                    encode_rpc_error(None, JsonRpcError::new(INVALID_REQUEST, error.to_string()))
+                }
+            },
             // A transport error is not a bad request: the framing is broken or
             // the peer is gone, and the next read returns the same error
             // immediately. Answering and continuing spun this task at a full
