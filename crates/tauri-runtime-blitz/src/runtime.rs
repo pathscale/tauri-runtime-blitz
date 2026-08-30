@@ -1328,20 +1328,23 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 self.agent_pointer = activate_agent_node(document, node_id, 2)?;
             }
             AgentAction::Hover { node_id } => {
-                let position = {
+                let (node_id, position) = {
                     let document = self
                         .agent_document()
                         .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
-                    resolve_agent_node(document, node_id)?.1
+                    resolve_agent_node(document, node_id)?
                 };
                 self.agent_pointer = position;
                 let document = self.agent_document().unwrap();
-                document.handle_ui_event(UiEvent::PointerMove(pointer_event(
-                    position,
-                    MouseEventButton::Main,
-                    MouseEventButtons::default(),
-                    KeyboardModifiers::empty(),
-                )));
+                document.handle_pointer_move_to_node(
+                    pointer_event(
+                        position,
+                        MouseEventButton::Main,
+                        MouseEventButtons::default(),
+                        KeyboardModifiers::empty(),
+                    ),
+                    node_id,
+                );
             }
             AgentAction::SetValue { node_id, value } => {
                 let node_id = blitz_dom::NodeId::from_u64(node_id);
@@ -2744,32 +2747,46 @@ pub fn inspect_document(
     revision: u64,
 ) -> DebugResponse {
     /*
-     * Poll and resolve before reading anything. The tree is read straight after
-     * this, and a document that has not settled reports boxes from before its
-     * last mutation, which reads as a component that laid out wrongly rather
-     * than one that was measured too early.
+     * Drain immediately runnable script work, but do not force a full style and
+     * layout pass for an already committed document. Agent actions resolve
+     * before their Ack and the window loop resolves asynchronous frames; an
+     * idle inspection is an observer, not another frame driver. Re-resolving
+     * every 25ms made scoped outcome latency proportional to the entire retained
+     * application even though the response contained one pane.
      */
+    let mut ran_script = false;
     for _ in 0..100 {
         if !document.poll(None) {
             break;
         }
+        ran_script = true;
     }
-    document.inner_mut().resolve(0.0);
+    if ran_script {
+        document.inner_mut().resolve(0.0);
+    }
     let inner = document.inner();
-    let layout_node_limit = inner.tree().iter().count();
+    const CHAIN_LIMIT: usize = 4_096;
     let root = root.map(blitz_dom::NodeId::from_u64);
     if root.is_some_and(|id| inner.get_node(id).is_none()) {
         return control_error("unknownNode", "the requested root node does not exist");
     }
     let focused_node = inner.get_focussed_node_id().map(|id| id.as_u64());
-    let nodes = inner
-        .tree()
-        .iter()
-        .filter_map(|(id, node)| {
+    let candidates: Vec<_> = if let Some(root) = root {
+        semantic_subtree_ids(&inner, root, max_depth)
+    } else {
+        inner
+            .tree()
+            .iter()
+            .filter_map(|(id, _)| semantic_depth(&inner, id, None, max_depth).map(|_| id))
+            .collect()
+    };
+    let nodes = candidates
+        .into_iter()
+        .filter_map(|id| {
+            let node = inner.get_node(id)?;
             let element = node.element_data()?;
-            semantic_depth(&inner, id, root, max_depth)?;
-            if !dom_chain_is_attached(&inner, id, layout_node_limit)
-                || !layout_chain_is_valid(&inner, id, layout_node_limit)
+            if !dom_chain_is_attached(&inner, id, CHAIN_LIMIT)
+                || !layout_chain_is_valid(&inner, id, CHAIN_LIMIT)
             {
                 return None;
             }
@@ -2810,6 +2827,37 @@ pub fn inspect_document(
         focused_node,
         nodes,
     })
+}
+
+/// Collect one rooted DOM subtree in document order without visiting retained
+/// panes outside it.
+#[cfg(all(feature = "agent-control", unix))]
+fn semantic_subtree_ids(
+    document: &blitz_dom::BaseDocument,
+    root: blitz_dom::NodeId,
+    max_depth: u32,
+) -> Vec<blitz_dom::NodeId> {
+    let mut out = Vec::new();
+    let mut stack = vec![(root, 0_u32)];
+    while let Some((node_id, depth)) = stack.pop() {
+        let Some(node) = document.get_node(node_id) else {
+            continue;
+        };
+        if node.element_data().is_some() {
+            out.push(node_id);
+        }
+        for &child_id in node.children.iter().rev() {
+            let child_depth = depth.saturating_add(
+                document
+                    .get_node(child_id)
+                    .is_some_and(|child| child.element_data().is_some()) as u32,
+            );
+            if max_depth == 0 || child_depth <= max_depth {
+                stack.push((child_id, child_depth));
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -2890,6 +2938,36 @@ mod tests {
         let shown_element = shown_node.element_data().unwrap();
         assert_eq!(semantic_role(shown_element), "button");
         assert_eq!(semantic_name(shown_element, shown_node, "button"), "Run");
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn rooted_inspection_returns_only_the_requested_dom_subtree() {
+        let mut document = ScriptDocument::from_html(
+            "<main><section id='left'><button>Left action</button></section><section id='right'><button>Right action</button></section></main>",
+            DocumentConfig::default(),
+        );
+        document.inner_mut().resolve(0.0);
+        let root = document
+            .inner()
+            .query_selector("#left")
+            .unwrap()
+            .unwrap()
+            .as_u64();
+
+        let DebugResponse::AgentSnapshot(snapshot) =
+            inspect_document(&mut document, Some(root), 40, 7)
+        else {
+            panic!("rooted inspection did not return a semantic snapshot");
+        };
+        let names: Vec<_> = snapshot
+            .nodes
+            .iter()
+            .map(|node| node.name.as_str())
+            .collect();
+        assert!(names.contains(&"Left action"));
+        assert!(!names.contains(&"Right action"));
+        assert_eq!(snapshot.revision, 7);
     }
 
     #[cfg(all(feature = "agent-control", unix))]
