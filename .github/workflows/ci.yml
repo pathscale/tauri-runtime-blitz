@@ -52,6 +52,8 @@ jobs:
         # Runtime debug switches and sampling sessions are process-global by
         # design, so their tests must not mutate that state concurrently.
         run: cargo test -p tauri-runtime-blitz --all-features -- --test-threads=1
+      - name: Verify publishable package
+        run: cargo package -p tauri-runtime-blitz
       - name: Verify Liquid Glass class
         run: >-
           cargo test -p tauri-runtime-blitz --all-features
