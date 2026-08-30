@@ -20,7 +20,7 @@ use window_vibrancy::{
 };
 
 use crate::runtime::with_native_window;
-#[cfg(feature = "agent-control")]
+#[cfg(feature = "diagnostics")]
 use blitz_control_protocol::WindowComposition;
 
 const BACKDROP_ID: &str = "trb-window-glass-backdrop";
@@ -42,6 +42,7 @@ enum GlassBackend {
 }
 
 impl GlassBackend {
+    #[cfg(feature = "diagnostics")]
     fn name(self) -> &'static str {
         match self {
             Self::Disabled => "disabled",
@@ -139,7 +140,7 @@ fn apply(
 /// successful `NativeGlass` state means the `NSGlassEffectView` was created and
 /// received this exact tint; a fallback names itself instead of claiming that
 /// unsupported tinting reached AppKit.
-#[cfg(feature = "agent-control")]
+#[cfg(feature = "diagnostics")]
 pub(crate) fn composition(surface_transparent: bool) -> WindowComposition {
     let state = APPLIED
         .get_or_init(|| Mutex::new(None))
@@ -149,7 +150,7 @@ pub(crate) fn composition(surface_transparent: bool) -> WindowComposition {
     composition_from(surface_transparent, state)
 }
 
-#[cfg(feature = "agent-control")]
+#[cfg(feature = "diagnostics")]
 fn composition_from(surface_transparent: bool, state: Option<AppliedGlass>) -> WindowComposition {
     let Some(applied) = state else {
         return WindowComposition {
@@ -255,7 +256,7 @@ fn channel(value: u8) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::AnyClass;
-    #[cfg(feature = "agent-control")]
+    #[cfg(feature = "diagnostics")]
     use super::{AppliedGlass, GlassBackend, GlassConfig, composition_from};
 
     /// The normal macOS 14 job proves the fallback. The macOS 26 matrix leg
@@ -267,7 +268,7 @@ mod tests {
         assert!(AnyClass::get(c"NSGlassEffectView").is_some());
     }
 
-    #[cfg(feature = "agent-control")]
+    #[cfg(feature = "diagnostics")]
     #[test]
     fn composition_reports_only_tint_a_backend_actually_installed() {
         let config = GlassConfig {
