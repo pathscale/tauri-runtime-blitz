@@ -2,6 +2,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::marker::PhantomData;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
@@ -42,7 +44,7 @@ use crate::agent_control_server::CONTROL_TEST_LOCK;
 use crate::control_protocol::{
     DebugSnapshot, DiagnosticsRequest, FrameMetrics, FrameWindowMetrics, LayoutBounds,
     LayoutDiagnosticRow, LayoutEdges, LayoutOffset, LayoutSize, RendererMetrics, RevisionSet,
-    ScriptMetrics, ScriptSource, SnapshotCost, SnapshotRequest, TimingStats,
+    ScriptMetrics, ScriptSource, SnapshotCost, SnapshotRequest, TimingStats, WindowComposition,
 };
 use crate::window_dispatch::{BlitzWindowDispatcher, NativeWindowState};
 use crate::{
@@ -817,6 +819,9 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 })
                 .map(|snapshot| DebugResponse::Idle(snapshot.revisions))
                 .unwrap_or_else(DebugResponse::Error),
+            DiagnosticsRequest::WindowComposition => {
+                DebugResponse::WindowComposition(native_window_composition())
+            }
             DiagnosticsRequest::Capture(request) => self
                 .capture_image(request)
                 .map(DebugResponse::Captured)
@@ -2618,6 +2623,8 @@ fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
                     callback(RawWindow { _marker: &marker });
                 }
             });
+    #[cfg(target_os = "macos")]
+    NATIVE_SURFACE_TRANSPARENT.store(builder.config.transparent, Ordering::Release);
     application.add_window(window);
     runtime_trace("native window queued");
 
@@ -2639,6 +2646,19 @@ fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
 #[cfg(target_os = "macos")]
 static NATIVE_WINDOW: std::sync::OnceLock<Mutex<Option<Arc<dyn winit::window::Window>>>> =
     std::sync::OnceLock::new();
+
+#[cfg(target_os = "macos")]
+static NATIVE_SURFACE_TRANSPARENT: AtomicBool = AtomicBool::new(false);
+
+#[cfg(all(feature = "diagnostics", unix, target_os = "macos"))]
+fn native_window_composition() -> WindowComposition {
+    crate::window_effects::composition(NATIVE_SURFACE_TRANSPARENT.load(Ordering::Acquire))
+}
+
+#[cfg(all(feature = "diagnostics", unix, not(target_os = "macos")))]
+fn native_window_composition() -> WindowComposition {
+    WindowComposition::default()
+}
 
 /// Run an embedder-owned macOS integration against the native window.
 ///
