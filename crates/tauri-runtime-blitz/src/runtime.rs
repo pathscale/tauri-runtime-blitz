@@ -791,6 +791,10 @@ impl<T: UserEvent> RuntimeApplication<T> {
                     }),
                 }),
             AgentControlRequest::Quit => DebugResponse::Ack,
+            _ => control_error(
+                "unsupportedRequest",
+                "this runtime does not implement that agent-control request",
+            ),
         }
     }
 
@@ -829,6 +833,10 @@ impl<T: UserEvent> RuntimeApplication<T> {
             DiagnosticsRequest::Observe { .. } => control_error(
                 "streamingUnavailable",
                 "diagnostic subscriptions are not implemented; request snapshots or metrics",
+            ),
+            _ => control_error(
+                "unsupportedRequest",
+                "this runtime does not implement that diagnostics request",
             ),
         }
     }
@@ -1397,6 +1405,12 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 }
             }
             AgentAction::Input(input) => self.perform_agent_input(input)?,
+            _ => {
+                return Err(debug_error(
+                    "unsupportedAction",
+                    "this runtime does not implement that agent action",
+                ));
+            }
         }
 
         /*
@@ -1503,6 +1517,12 @@ impl<T: UserEvent> RuntimeApplication<T> {
                 // while the document remained unchanged.
                 document.inner_mut().set_hover_to(hover_at.0, hover_at.1);
                 document.handle_ui_event(UiEvent::Wheel(event));
+            }
+            _ => {
+                return Err(debug_error(
+                    "unsupportedInput",
+                    "this runtime does not implement that input command",
+                ));
             }
         }
         Ok(())
