@@ -20,6 +20,8 @@ use window_vibrancy::{
 };
 
 use crate::runtime::with_native_window;
+#[cfg(feature = "agent-control")]
+use blitz_control_protocol::WindowComposition;
 
 const BACKDROP_ID: &str = "trb-window-glass-backdrop";
 
@@ -30,7 +32,34 @@ struct GlassConfig {
     enabled: bool,
 }
 
-static APPLIED: OnceLock<Mutex<Option<GlassConfig>>> = OnceLock::new();
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GlassBackend {
+    Disabled,
+    NativeGlass,
+    LiquidGlass,
+    Vibrancy,
+    Unavailable,
+}
+
+impl GlassBackend {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::NativeGlass => "nativeGlass",
+            Self::LiquidGlass => "liquidGlass",
+            Self::Vibrancy => "vibrancy",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct AppliedGlass {
+    config: GlassConfig,
+    backend: GlassBackend,
+}
+
+static APPLIED: OnceLock<Mutex<Option<AppliedGlass>>> = OnceLock::new();
 
 /// Apply a styled glass backdrop behind the renderer.
 ///
@@ -46,11 +75,18 @@ pub fn set_window_glass(tint: Option<(u8, u8, u8, u8)>, radius: Option<f64>, ena
     let Ok(mut applied) = APPLIED.get_or_init(|| Mutex::new(None)).lock() else {
         return;
     };
-    if *applied == Some(requested) {
+    if applied
+        .as_ref()
+        .is_some_and(|state| state.config == requested)
+    {
         return;
     }
-    if with_native_window(|window| apply(window, tint, radius, enabled)) {
-        *applied = Some(requested);
+    let mut backend = None;
+    if with_native_window(|window| backend = Some(apply(window, tint, radius, enabled))) {
+        *applied = Some(AppliedGlass {
+            config: requested,
+            backend: backend.unwrap_or(GlassBackend::Unavailable),
+        });
     }
 }
 
@@ -59,14 +95,14 @@ fn apply(
     tint: Option<(u8, u8, u8, u8)>,
     radius: Option<f64>,
     enabled: bool,
-) {
+) -> GlassBackend {
     if !enabled {
         remove_backdrop(window);
         let _ = clear_liquid_glass(window);
-        return;
+        return GlassBackend::Disabled;
     }
     if install_backdrop(window, tint, radius) {
-        return;
+        return GlassBackend::NativeGlass;
     }
 
     let _ = clear_liquid_glass(window);
@@ -77,16 +113,69 @@ fn apply(
     if let Some(radius) = radius {
         options = options.radius(radius);
     }
-    if matches!(
-        apply_liquid_glass(window, options),
-        Err(window_vibrancy::Error::UnsupportedPlatformVersion(_))
-    ) {
-        let _ = apply_vibrancy(
-            window,
-            NSVisualEffectMaterial::UnderWindowBackground,
-            None,
-            None,
-        );
+    match apply_liquid_glass(window, options) {
+        Ok(()) => GlassBackend::LiquidGlass,
+        Err(window_vibrancy::Error::UnsupportedPlatformVersion(_)) => {
+            if apply_vibrancy(
+                window,
+                NSVisualEffectMaterial::UnderWindowBackground,
+                None,
+                None,
+            )
+            .is_ok()
+            {
+                GlassBackend::Vibrancy
+            } else {
+                GlassBackend::Unavailable
+            }
+        }
+        Err(_) => GlassBackend::Unavailable,
+    }
+}
+
+/// Native window composition which the runtime actually installed.
+///
+/// This reports the post-application backend rather than echoing CSS. A
+/// successful `NativeGlass` state means the `NSGlassEffectView` was created and
+/// received this exact tint; a fallback names itself instead of claiming that
+/// unsupported tinting reached AppKit.
+#[cfg(feature = "agent-control")]
+pub(crate) fn composition(surface_transparent: bool) -> WindowComposition {
+    let state = APPLIED
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|state| *state);
+    composition_from(surface_transparent, state)
+}
+
+#[cfg(feature = "agent-control")]
+fn composition_from(surface_transparent: bool, state: Option<AppliedGlass>) -> WindowComposition {
+    let Some(applied) = state else {
+        return WindowComposition {
+            supported: true,
+            surface_transparent,
+            glass_backend: Some("notApplied".into()),
+            ..WindowComposition::default()
+        };
+    };
+    let carries_tint = matches!(
+        applied.backend,
+        GlassBackend::NativeGlass | GlassBackend::LiquidGlass
+    );
+    WindowComposition {
+        supported: true,
+        surface_transparent,
+        glass_enabled: applied.config.enabled,
+        glass_backend: Some(applied.backend.name().into()),
+        tint_rgba: carries_tint
+            .then_some(applied.config.tint)
+            .flatten()
+            .map(|(r, g, b, a)| [r, g, b, a]),
+        radius: carries_tint
+            .then_some(applied.config.radius_bits)
+            .flatten()
+            .map(f64::from_bits),
     }
 }
 
@@ -166,6 +255,8 @@ fn channel(value: u8) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::AnyClass;
+    #[cfg(feature = "agent-control")]
+    use super::{AppliedGlass, GlassBackend, GlassConfig, composition_from};
 
     /// The normal macOS 14 job proves the fallback. The macOS 26 matrix leg
     /// runs this ignored test explicitly, proving the typed path's native class
@@ -174,5 +265,36 @@ mod tests {
     #[ignore = "requires the macOS 26 CI runner"]
     fn liquid_glass_class_is_available() {
         assert!(AnyClass::get(c"NSGlassEffectView").is_some());
+    }
+
+    #[cfg(feature = "agent-control")]
+    #[test]
+    fn composition_reports_only_tint_a_backend_actually_installed() {
+        let config = GlassConfig {
+            tint: Some((174, 50, 112, 0)),
+            radius_bits: Some(12.0_f64.to_bits()),
+            enabled: true,
+        };
+        let native = composition_from(
+            true,
+            Some(AppliedGlass {
+                config,
+                backend: GlassBackend::NativeGlass,
+            }),
+        );
+        assert!(native.surface_transparent);
+        assert_eq!(native.tint_rgba, Some([174, 50, 112, 0]));
+        assert_eq!(native.radius, Some(12.0));
+
+        let fallback = composition_from(
+            true,
+            Some(AppliedGlass {
+                config,
+                backend: GlassBackend::Vibrancy,
+            }),
+        );
+        assert_eq!(fallback.glass_backend.as_deref(), Some("vibrancy"));
+        assert_eq!(fallback.tint_rgba, None);
+        assert_eq!(fallback.radius, None);
     }
 }
