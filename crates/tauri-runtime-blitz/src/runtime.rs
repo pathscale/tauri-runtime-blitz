@@ -2785,7 +2785,6 @@ pub fn inspect_document(
         document.inner_mut().resolve(0.0);
     }
     let inner = document.inner();
-    const CHAIN_LIMIT: usize = 4_096;
     let root = root.map(blitz_dom::NodeId::from_u64);
     if root.is_some_and(|id| inner.get_node(id).is_none()) {
         return control_error("unknownNode", "the requested root node does not exist");
@@ -2800,13 +2799,14 @@ pub fn inspect_document(
             .filter_map(|(id, _)| semantic_depth(&inner, id, None, max_depth).map(|_| id))
             .collect()
     };
+    let node_limit = inner.tree().iter().count();
     let nodes = candidates
         .into_iter()
         .filter_map(|id| {
             let node = inner.get_node(id)?;
             let element = node.element_data()?;
-            if !dom_chain_is_attached(&inner, id, CHAIN_LIMIT)
-                || !layout_chain_is_valid(&inner, id, CHAIN_LIMIT)
+            if !dom_chain_is_attached(&inner, id, node_limit)
+                || !layout_chain_is_valid(&inner, id, node_limit)
             {
                 return None;
             }
