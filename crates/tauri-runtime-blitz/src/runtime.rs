@@ -1045,13 +1045,21 @@ fn capture_document_with_surface(
     let height = ((crop_height * f64::from(scale)).round() as u32)
         .min(full_pixel_height.saturating_sub(top))
         .max(1);
-    // A whole window at 8x is gigabytes; refuse rather than exhaust memory
-    // on a machine that is probably already running the app under test.
-    const MAX_PIXELS: u64 = 64 * 1024 * 1024;
+    // Leave room for the JSON-RPC and MCP envelopes inside the transport's
+    // fixed frame ceiling. The old 64-million-pixel limit allowed a 256 MiB
+    // raster and a 341 MiB base64 string, only for protocol encoding to reject
+    // the result against its 16 MiB frame limit after all that work was done.
+    const FRAME_ENVELOPE_RESERVE: usize = 64 * 1024;
+    const MAX_BASE64_BYTES: usize =
+        blitz_control_protocol::MAX_DEBUG_FRAME_BYTES - FRAME_ENVELOPE_RESERVE;
+    const MAX_RAW_BYTES: usize = (MAX_BASE64_BYTES / 4) * 3;
+    const MAX_PIXELS: u64 = (MAX_RAW_BYTES / 4) as u64;
     if u64::from(width) * u64::from(height) > MAX_PIXELS {
         return Err(debug_error(
             "captureTooLarge",
-            &format!("{width}x{height} exceeds the capture ceiling; lower the scale"),
+            &format!(
+                "{width}x{height} cannot fit in one diagnostic frame; capture a node or lower the scale"
+            ),
         ));
     }
 
@@ -1992,17 +2000,28 @@ fn semantic_name(element: &blitz_dom::ElementData, node: &blitz_dom::Node, role:
     let name = element_attr(element, "aria-label")
         .or_else(|| element_attr(element, "alt"))
         .or_else(|| element_attr(element, "title"))
-        .map(str::to_string)
+        .map(std::borrow::Cow::Borrowed)
         .or_else(|| {
-            matches!(role, "button" | "link" | "heading" | "option").then(|| node.text_content())
+            matches!(role, "button" | "link" | "heading" | "option")
+                .then(|| std::borrow::Cow::Owned(node.text_content()))
         })
         .unwrap_or_default();
-    name.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(512)
-        .collect()
+    let mut normalized = String::with_capacity(name.len().min(512));
+    let mut characters = 0;
+    for word in name.split_whitespace() {
+        if !normalized.is_empty() && characters < 512 {
+            normalized.push(' ');
+            characters += 1;
+        }
+        for character in word.chars() {
+            if characters == 512 {
+                return normalized;
+            }
+            normalized.push(character);
+            characters += 1;
+        }
+    }
+    normalized
 }
 
 #[cfg(all(feature = "agent-control", unix))]
@@ -2060,36 +2079,6 @@ fn semantic_selected(element: &blitz_dom::ElementData) -> bool {
 }
 
 #[cfg(all(feature = "agent-control", unix))]
-fn semantic_depth(
-    document: &blitz_dom::BaseDocument,
-    node_id: blitz_dom::NodeId,
-    root: Option<blitz_dom::NodeId>,
-    max_depth: u32,
-) -> Option<u32> {
-    let mut current = Some(node_id);
-    let mut depth = 0_u32;
-    loop {
-        let id = current?;
-        if Some(id) == root {
-            break;
-        }
-        let node = document.get_node(id)?;
-        current = node.parent;
-        if current
-            .and_then(|parent| document.get_node(parent))
-            .and_then(blitz_dom::Node::element_data)
-            .is_some()
-        {
-            depth = depth.saturating_add(1);
-        }
-        if root.is_none() && current.is_none() {
-            break;
-        }
-    }
-    (max_depth == 0 || depth <= max_depth).then_some(depth)
-}
-
-#[cfg(all(feature = "agent-control", unix))]
 fn semantic_parent(
     document: &blitz_dom::BaseDocument,
     node_id: blitz_dom::NodeId,
@@ -2116,41 +2105,46 @@ fn node_is_visible(document: &blitz_dom::BaseDocument, node_id: blitz_dom::NodeI
         let Some(node) = document.get_node(id) else {
             return false;
         };
-        if !node.flags.is_in_document() || node.is_display_none() {
-            return false;
-        }
-        /*
-         * `visibility: hidden` counts too, not just `display: none`.
-         *
-         * The two are different in layout and identical to a viewer: a hidden
-         * node keeps its box and paints nothing. Reporting it as visible made
-         * an audit of the running application call it a fault, because the box
-         * was there and the pixels were not. Tailwind's `invisible` is exactly
-         * this, and it is how a control that is deliberately dormant - a Stop
-         * button with no run to stop - is expressed.
-         *
-         * `Collapse` is included: on anything that is not a table row it means
-         * the same as `Hidden`, and on a row it removes the row entirely, so
-         * treating it as not-visible is right in both cases.
-         */
-        if node.primary_styles().is_some_and(|style| {
-            use style::computed_values::visibility::T as Visibility;
-            matches!(
-                style.clone_visibility(),
-                Visibility::Hidden | Visibility::Collapse
-            )
-        }) {
-            return false;
-        }
-        if let Some(element) = node.element_data()
-            && (element_attr(element, "hidden").is_some()
-                || element_attr(element, "aria-hidden") == Some("true"))
-        {
+        if !node_is_individually_visible(node) {
             return false;
         }
         current = node.parent;
     }
     true
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+fn node_is_individually_visible(node: &blitz_dom::Node) -> bool {
+    if !node.flags.is_in_document() || node.is_display_none() {
+        return false;
+    }
+    /*
+     * `visibility: hidden` counts too, not just `display: none`.
+     *
+     * The two are different in layout and identical to a viewer: a hidden
+     * node keeps its box and paints nothing. Reporting it as visible made
+     * an audit of the running application call it a fault, because the box
+     * was there and the pixels were not. Tailwind's `invisible` is exactly
+     * this, and it is how a control that is deliberately dormant - a Stop
+     * button with no run to stop - is expressed.
+     *
+     * `Collapse` is included: on anything that is not a table row it means
+     * the same as `Hidden`, and on a row it removes the row entirely, so
+     * treating it as not-visible is right in both cases.
+     */
+    if node.primary_styles().is_some_and(|style| {
+        use style::computed_values::visibility::T as Visibility;
+        matches!(
+            style.clone_visibility(),
+            Visibility::Hidden | Visibility::Collapse
+        )
+    }) {
+        return false;
+    }
+    !node.element_data().is_some_and(|element| {
+        element_attr(element, "hidden").is_some()
+            || element_attr(element, "aria-hidden") == Some("true")
+    })
 }
 
 #[cfg(all(feature = "agent-control", unix))]
@@ -2810,39 +2804,44 @@ pub fn inspect_document(
         return control_error("unknownNode", "the requested root node does not exist");
     }
     let focused_node = inner.get_focussed_node_id().map(|id| id.as_u64());
-    let candidates: Vec<_> = if let Some(root) = root {
-        semantic_subtree_ids(&inner, root, max_depth)
-    } else {
-        inner
-            .tree()
-            .iter()
-            .filter_map(|(id, _)| semantic_depth(&inner, id, None, max_depth).map(|_| id))
-            .collect()
-    };
     let node_limit = inner.tree().iter().count();
+    let candidates = if let Some(root) = root {
+        semantic_subtree_ids(&inner, root, max_depth)
+            .into_iter()
+            .filter_map(|id| {
+                inner.get_node(id)?;
+                dom_chain_is_attached(&inner, id, node_limit).then(|| SemanticCandidate {
+                    id,
+                    parent: semantic_parent(&inner, id, Some(root)),
+                    visible: node_is_visible(&inner, id),
+                })
+            })
+            .collect()
+    } else {
+        attached_semantic_candidates(&inner, max_depth)
+    };
+    let layout_validity = layout_chain_validities(&inner, &candidates, node_limit);
     let nodes = candidates
         .into_iter()
-        .filter_map(|id| {
+        .filter_map(|candidate| {
+            let id = candidate.id;
             let node = inner.get_node(id)?;
             let element = node.element_data()?;
-            if !dom_chain_is_attached(&inner, id, node_limit)
-                || !layout_chain_is_valid(&inner, id, node_limit)
-            {
+            if layout_validity.get(&id) != Some(&true) {
                 return None;
             }
             let rect = inner.get_client_bounding_rect(id);
-            let visible = node_is_visible(&inner, id)
+            let visible = candidate.visible
                 && rect
                     .as_ref()
                     .is_some_and(|rect| rect.width > 0.0 && rect.height > 0.0);
             let role = semantic_role(element);
             let name = semantic_name(element, node, &role);
             let value = semantic_value(element);
-            let parent = semantic_parent(&inner, id, root).map(|id| id.as_u64());
             Some(SemanticNode {
                 dom_id: element_attr(element, "id").map(str::to_owned),
                 id: id.as_u64(),
-                parent,
+                parent: candidate.parent.map(|id| id.as_u64()),
                 role,
                 name,
                 value,
@@ -2867,6 +2866,132 @@ pub fn inspect_document(
         focused_node,
         nodes,
     })
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+struct SemanticCandidate {
+    id: blitz_dom::NodeId,
+    parent: Option<blitz_dom::NodeId>,
+    visible: bool,
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+#[derive(Clone, Copy)]
+enum LayoutChainState {
+    Visiting,
+    Valid,
+    Invalid,
+}
+
+/// Resolve layout ancestry once for every inspected node.
+///
+/// DOM ancestry and layout ancestry are not interchangeable, but they share
+/// the same performance trap: walking every node back to a root makes a full
+/// inspection proportional to `nodes * depth`. Memoize each layout ancestor so
+/// later candidates stop at the first result the traversal already proved.
+#[cfg(all(feature = "agent-control", unix))]
+fn layout_chain_validities(
+    document: &blitz_dom::BaseDocument,
+    candidates: &[SemanticCandidate],
+    node_limit: usize,
+) -> HashMap<blitz_dom::NodeId, bool> {
+    let mut states = HashMap::with_capacity(candidates.len());
+
+    for candidate in candidates {
+        if matches!(
+            states.get(&candidate.id),
+            Some(LayoutChainState::Valid | LayoutChainState::Invalid)
+        ) {
+            continue;
+        }
+
+        let mut chain = Vec::new();
+        let mut current = Some(candidate.id);
+        let valid = loop {
+            let Some(id) = current else {
+                break true;
+            };
+            match states.get(&id) {
+                Some(LayoutChainState::Valid) => break true,
+                Some(LayoutChainState::Invalid | LayoutChainState::Visiting) => break false,
+                None => {}
+            }
+            if chain.len() > node_limit {
+                break false;
+            }
+            let Some(node) = document.get_node(id) else {
+                break false;
+            };
+            states.insert(id, LayoutChainState::Visiting);
+            chain.push(id);
+            current = node.layout_parent.get();
+        };
+
+        let resolved = if valid {
+            LayoutChainState::Valid
+        } else {
+            LayoutChainState::Invalid
+        };
+        for id in chain {
+            states.insert(id, resolved);
+        }
+    }
+
+    states
+        .into_iter()
+        .filter_map(|(id, state)| match state {
+            LayoutChainState::Valid => Some((id, true)),
+            LayoutChainState::Invalid => Some((id, false)),
+            LayoutChainState::Visiting => None,
+        })
+        .collect()
+}
+
+/// Collect the attached document in one traversal.
+///
+/// The previous full inspection asked every node to rediscover its depth,
+/// semantic parent, attachment and inherited visibility by walking back to the
+/// root independently. A retained application therefore paid roughly
+/// `nodes * depth` before it serialized one byte. Carry those inherited facts
+/// down the tree once instead.
+#[cfg(all(feature = "agent-control", unix))]
+fn attached_semantic_candidates(
+    document: &blitz_dom::BaseDocument,
+    max_depth: u32,
+) -> Vec<SemanticCandidate> {
+    let root = document.root_node().id;
+    let mut candidates = Vec::new();
+    let mut stack = vec![(root, 0_u32, None, true)];
+
+    while let Some((id, depth, semantic_parent, ancestors_visible)) = stack.pop() {
+        let Some(node) = document.get_node(id) else {
+            continue;
+        };
+        let visible = ancestors_visible && node_is_individually_visible(node);
+        let is_element = node.element_data().is_some();
+        if is_element && max_depth != 0 && depth > max_depth {
+            continue;
+        }
+        if is_element {
+            candidates.push(SemanticCandidate {
+                id,
+                parent: semantic_parent,
+                visible,
+            });
+        }
+
+        let child_depth = depth.saturating_add(is_element as u32);
+        let child_parent = if is_element {
+            Some(id)
+        } else {
+            semantic_parent
+        };
+        for &child in node.children.iter().rev() {
+            stack.push((child, child_depth, child_parent, visible));
+        }
+    }
+
+    candidates
 }
 
 /// Collect one rooted DOM subtree in document order without visiting retained
@@ -3022,6 +3147,15 @@ mod tests {
         let target = inner.query_selector("#target").unwrap().unwrap();
         let node_limit = inner.tree().iter().count();
         assert!(layout_chain_is_valid(&inner, target, node_limit));
+        let candidate = || SemanticCandidate {
+            id: target,
+            parent: None,
+            visible: true,
+        };
+        assert_eq!(
+            layout_chain_validities(&inner, &[candidate()], node_limit).get(&target),
+            Some(&true)
+        );
 
         let missing_parent = (1..=1024)
             .map(blitz_dom::NodeId::from_u64)
@@ -3034,6 +3168,10 @@ mod tests {
             .set(Some(missing_parent));
 
         assert!(!layout_chain_is_valid(&inner, target, node_limit));
+        assert_eq!(
+            layout_chain_validities(&inner, &[candidate()], node_limit).get(&target),
+            Some(&false)
+        );
     }
 
     #[cfg(all(feature = "agent-control", unix))]
