@@ -218,6 +218,7 @@ fn stream_wants_event(streams: &[DebugStream], event: &DebugEvent) -> bool {
         DebugEvent::Console(_) => streams.contains(&DebugStream::Console),
         DebugEvent::RuntimeError(_) => streams.contains(&DebugStream::RuntimeErrors),
         DebugEvent::PaintCommitted { .. } => streams.contains(&DebugStream::Paint),
+        _ => false,
     }
 }
 
@@ -330,6 +331,10 @@ async fn handle_connection(
                         });
                         encode_response(id, &response)
                     }
+                    Ok(_) => encode_rpc_error(
+                        request_id,
+                        JsonRpcError::new(INVALID_REQUEST, "unsupported protocol request"),
+                    ),
                     Err(error) => encode_rpc_error(
                         request_id,
                         JsonRpcError::new(INVALID_REQUEST, error.to_string()),
