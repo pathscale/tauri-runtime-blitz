@@ -1434,13 +1434,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
         let document = self
             .agent_document()
             .ok_or_else(|| debug_error("documentUnavailable", "no active document"))?;
-        for _ in 0..100 {
-            if !document.poll(None) {
-                break;
-            }
-        }
-        document.inner_mut().resolve(0.0);
-        Ok(())
+        settle_agent_action(document)
     }
 
     #[cfg(all(feature = "agent-control", unix))]
@@ -2523,6 +2517,31 @@ fn debug_error(code: &str, message: &str) -> DebugError {
         code: code.into(),
         message: message.into(),
     }
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+const MAX_AGENT_SETTLE_POLLS: usize = 100;
+
+/// Drain the synchronous consequences of one driven action before acknowledging it.
+///
+/// Timers and animation frames remain asynchronous. A poll hook that stays runnable
+/// is different: returning `Ack` in that state lets the next inspection observe a
+/// half-applied action. Report the exhaustion so callers can fail the interaction
+/// instead of compensating with an arbitrary sleep.
+#[cfg(all(feature = "agent-control", unix))]
+fn settle_agent_action(document: &mut ScriptDocument) -> Result<(), DebugError> {
+    for _ in 0..MAX_AGENT_SETTLE_POLLS {
+        if !document.poll(None) {
+            document.inner_mut().resolve(0.0);
+            return Ok(());
+        }
+    }
+
+    document.inner_mut().resolve(0.0);
+    Err(debug_error(
+        "actionDidNotSettle",
+        "the action kept synchronous script work runnable past the settlement budget",
+    ))
 }
 
 #[cfg(all(feature = "agent-control", unix))]
@@ -3687,6 +3706,43 @@ mod tests {
         assert_eq!(event.code, Code::Digit2);
         assert!(event.modifiers.meta());
         assert!(event.text.is_none());
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn agent_action_settlement_drains_until_the_document_is_idle() {
+        let mut document =
+            ScriptDocument::from_html("<main>Ready</main>", DocumentConfig::default());
+        let polls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = std::sync::Arc::clone(&polls);
+        document.set_poll_hook(move |_, _| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 3
+        });
+
+        settle_agent_action(&mut document).unwrap();
+
+        assert_eq!(polls.load(std::sync::atomic::Ordering::Relaxed), 4);
+    }
+
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn agent_action_settlement_never_acks_a_still_runnable_document() {
+        let mut document =
+            ScriptDocument::from_html("<main>Busy</main>", DocumentConfig::default());
+        let polls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = std::sync::Arc::clone(&polls);
+        document.set_poll_hook(move |_, _| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            true
+        });
+
+        let error = settle_agent_action(&mut document).unwrap_err();
+
+        assert_eq!(error.code, "actionDidNotSettle");
+        assert_eq!(
+            polls.load(std::sync::atomic::Ordering::Relaxed),
+            MAX_AGENT_SETTLE_POLLS
+        );
     }
 
     #[cfg(all(feature = "agent-control", unix))]
