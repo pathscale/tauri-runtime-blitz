@@ -12,8 +12,16 @@ repository.workspace = true
 anyrender_vello = { package = "ps-anyrender-vello", version = "^0.14.0" }
 anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", version = "^0.10.0", optional = true }
 style = { version = "0.20.0", package = "stylo" }
-blitz-dom = { package = "ps-blitz-dom", version = "^0.4", optional = true }
-blitz-script = { package = "ps-blitz-script", version = "^0.4", features = ["system-fonts"] }
+blitz-dom = { package = "ps-blitz-dom", version = "^0.4", optional = true, default-features = false, features = ["accessibility", "svg", "woff", "image-formats", "file-input", "custom-widget"] }
+# No `system-fonts`, in any configuration. It reaches `fontique/system` and, on
+# Linux, `yeslogic-fontconfig-sys`, which links a system library -- so enabling
+# it here would decide that every consumer of this crate needs one installed,
+# including a headless one that reads no font catalogue. Only on that target,
+# which is why it was invisible from macOS.
+#
+# An application that wants the machine's fonts asks for them itself, and both
+# consumers already do.
+blitz-script = { package = "ps-blitz-script", version = "^0.4" }
 blitz-control-protocol = { version = "^0.4", optional = true }
 anyrender = { package = "ps-anyrender", version = "^0.13.0" }
 # Offscreen capture, behind `diagnostics` so a shipping build carries neither.
@@ -52,7 +60,11 @@ default = ["agent-control", "runtime"]
 # Off, a headless consumer gets the inspection and activation surface with no
 # Tauri in its graph, which on Linux is the difference between a build and GTK
 # development headers for a binary that never opens a window.
-runtime = ["dep:tauri", "dep:tauri-runtime", "dep:tauri-utils"]
+runtime = [
+    "dep:tauri",
+    "dep:tauri-runtime",
+    "dep:tauri-utils",
+]
 agent-control = ["blitz-shell/debug-control", "dep:blitz-control-protocol", "dep:blitz-dom", "dep:blitz-traits", "dep:endpoint-libs", "dep:keyboard-types", "dep:serde", "dep:serde_json", "dep:tokio"]
 debug-control = ["blitz-script/debug-control", "blitz-shell/debug-control"]
 diagnostics = [
