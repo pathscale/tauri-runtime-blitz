@@ -38,11 +38,18 @@ use winit::window::{WindowAttributes, WindowButtons, WindowLevel};
 #[cfg(target_os = "macos")]
 use winit::platform::macos::{ApplicationHandlerExtMacOS, WindowAttributesMacOS};
 
+#[cfg(all(feature = "diagnostics", unix))]
+use crate::agent::{CaptureSurface, capture_document_with_surface, snapshot_document};
+#[cfg(all(feature = "agent-control", unix))]
+/*
+ * Gated to match the items themselves. The capture path is `diagnostics`, the
+ * activation path is `agent-control`, and importing both under one attribute
+ * made a build with only the latter fail on three names it never uses.
+ */
 #[cfg(all(feature = "agent-control", unix))]
 use crate::agent::{
-    CaptureSurface, activate_agent_node, capture_document_with_surface, control_error, debug_error,
-    focus_agent_node, inspect_document, key_event, keyboard_modifiers, pointer_coords,
-    pointer_event, resolve_agent_node, snapshot_document,
+    activate_agent_node, control_error, debug_error, focus_agent_node, inspect_document, key_event,
+    keyboard_modifiers, pointer_coords, pointer_event, resolve_agent_node,
 };
 #[cfg(all(feature = "agent-control", unix, test))]
 use crate::agent_control_server::CONTROL_TEST_LOCK;
@@ -68,7 +75,6 @@ use blitz_traits::events::{
     BlitzImeEvent, BlitzWheelDelta, BlitzWheelEvent, MouseEventButton, MouseEventButtons, Point,
     UiEvent,
 };
-#[cfg(all(feature = "diagnostics", unix))]
 #[cfg(all(feature = "agent-control", unix))]
 use keyboard_types::{Code, Key, Modifiers as KeyboardModifiers};
 
