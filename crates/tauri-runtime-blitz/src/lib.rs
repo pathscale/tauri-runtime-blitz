@@ -3,18 +3,33 @@
 //! The first implementation target is Tauri 2.11.x. Its runtime traits are not semver-stable,
 //! so versions stay exact and upgrades are deliberate.
 
+#[cfg(feature = "runtime")]
 use tauri_runtime::Icon;
+#[cfg(feature = "runtime")]
 use tauri_runtime::dpi::{Position, Size};
+#[cfg(feature = "runtime")]
 use tauri_runtime::window::{WindowBuilder, WindowBuilderBase, WindowSizeConstraints};
+#[cfg(feature = "runtime")]
 use tauri_utils::config::{
     Color, LogicalPosition, PreventOverflowConfig, PreventOverflowMargin, WindowConfig,
 };
+#[cfg(feature = "runtime")]
 use tauri_utils::{Theme, TitleBarStyle};
 
+#[cfg(feature = "runtime")]
 mod ipc;
+#[cfg(feature = "runtime")]
 pub use ipc::attach_ipc_handler;
 #[cfg(all(feature = "agent-control", unix))]
 mod agent_control_server;
+/// Answer an `Inspect` request against a document, from the same code the
+/// runtime uses. A headless host needs this to serve the socket it now can
+/// host; reimplementing it is how a harness ends up disagreeing with the
+/// inspector about what a node is called.
+#[cfg(all(feature = "agent-control", unix))]
+pub use agent::{
+    click_agent_node, focus_agent_node, hover_agent_node, inspect_document, press_agent_key,
+};
 /// Serving inspection from a host that is not this runtime.
 ///
 /// The server binds a socket and forwards framed requests to a closure; it has
@@ -33,47 +48,54 @@ pub use agent_control_server::{AgentControlServer, ControlBridge, ControlBridgeR
 /// always used it by, so `control_protocol::` paths keep resolving.
 #[cfg(feature = "agent-control")]
 pub use blitz_control_protocol as control_protocol;
-/// Answer an `Inspect` request against a document, from the same code the
-/// runtime uses. A headless host needs this to serve the socket it now can
-/// host; reimplementing it is how a harness ends up disagreeing with the
-/// inspector about what a node is called.
-#[cfg(all(feature = "agent-control", unix))]
-pub use runtime::{
-    click_agent_node, focus_agent_node, hover_agent_node, inspect_document, press_agent_key,
-};
+mod agent;
+#[cfg(feature = "runtime")]
 mod script_queue;
+#[cfg(feature = "runtime")]
 pub use script_queue::ScriptQueue;
+#[cfg(feature = "runtime")]
 mod runtime;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "runtime"))]
 mod window_effects;
+#[cfg(all(feature = "diagnostics", unix))]
+pub use agent::{DocumentCapture, capture_document, snapshot_document};
 #[cfg(feature = "agent-control")]
 pub use blitz_traits::profiling::DebugOptions as RuntimeDebugOptions;
+#[cfg(all(feature = "diagnostics", unix))]
+#[cfg(feature = "runtime")]
+pub use runtime::set_diagnostics_handler;
+#[cfg(feature = "runtime")]
 pub use runtime::{
     BlitzEventLoopProxy, BlitzRuntime, BlitzRuntimeHandle, builder, set_document_factory,
     set_runtime_trace,
 };
-#[cfg(all(feature = "diagnostics", unix))]
-pub use runtime::{DocumentCapture, capture_document, set_diagnostics_handler, snapshot_document};
 #[cfg(all(feature = "agent-control", unix))]
+#[cfg(feature = "runtime")]
 pub use runtime::{
     agent_control_enabled, apply_runtime_debug_options, set_agent_control_enabled,
     set_agent_control_handler,
 };
 #[cfg(feature = "agent-control")]
+#[cfg(feature = "runtime")]
 pub use runtime::{
     begin_deep_profiling, deep_profiling_enabled, deep_profiling_permitted,
     set_deep_profiling_permitted,
 };
 /// Apply reusable macOS window glass without exposing AppKit to embedders.
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "runtime"))]
 pub use window_effects::set_window_glass;
+#[cfg(feature = "runtime")]
 mod webview;
+#[cfg(feature = "runtime")]
 pub use webview::{BlitzWebviewDispatcher, PreparedBlitzWebview, prepare_pending_webview};
+#[cfg(feature = "runtime")]
 mod window_dispatch;
+#[cfg(feature = "runtime")]
 pub use window_dispatch::BlitzWindowDispatcher;
 
 /// Renderer-neutral window attributes retained until the native Blitz window is created.
 #[derive(Debug, Clone)]
+#[cfg(feature = "runtime")]
 pub struct BlitzWindowBuilder {
     pub config: WindowConfig,
     pub constraints: Option<WindowSizeConstraints>,
@@ -82,8 +104,10 @@ pub struct BlitzWindowBuilder {
     pub parent: Option<*mut std::ffi::c_void>,
 }
 
+#[cfg(feature = "runtime")]
 impl WindowBuilderBase for BlitzWindowBuilder {}
 
+#[cfg(feature = "runtime")]
 impl WindowBuilder for BlitzWindowBuilder {
     fn new() -> Self {
         Self {

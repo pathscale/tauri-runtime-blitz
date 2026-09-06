@@ -147,6 +147,8 @@ impl AgentControlServer {
     /// loaded. In that order `_sampling` begins as `None`; merely granting
     /// permission later does not mutate an already-running server, so every
     /// diagnostic snapshot keeps reporting `script: null` until restart.
+    // Called from the runtime, which a headless consumer does not compile.
+    #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
     pub(crate) fn refresh_deep_profiling(&mut self) {
         self._sampling = blitz_shell::begin_deep_profiling();
     }
