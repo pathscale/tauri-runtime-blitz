@@ -41,7 +41,7 @@ tauri = { version = "2", default-features = false }
 tauri-runtime = "2"
 tauri-utils = "2"
 url = "2"
-winit = "0.31.0-beta.2"
+winit = "0.31.0-beta.3"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync"], optional = true }
 
 [features]
