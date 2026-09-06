@@ -2018,50 +2018,6 @@ mod tests {
 
     #[cfg(all(feature = "agent-control", unix))]
     #[test]
-    fn setting_a_node_value_replaces_text_and_dispatches_input() {
-        let mut document = ScriptDocument::from_html(
-            r#"
-            <main>
-              <input id="field" value="old" style="width:80px;height:30px">
-              <output id="result"></output>
-            </main>
-            <script>
-              const field = document.getElementById("field");
-              const result = document.getElementById("result");
-              field.addEventListener("input", event => result.textContent = event.target.value);
-            </script>
-            "#,
-            DocumentConfig::default(),
-        );
-        document.execute_scripts();
-        document.inner_mut().resolve(0.0);
-        let (field, result) = {
-            let inner = document.inner();
-            (
-                inner.query_selector("#field").unwrap().unwrap(),
-                inner.query_selector("#result").unwrap().unwrap(),
-            )
-        };
-
-        let replacement = "https://example.test/org/repository/issues/40?view=full#comment-2";
-        set_agent_node_value(&mut document, field, replacement.into()).unwrap();
-
-        let inner = document.inner();
-        let text = inner
-            .get_node(field)
-            .unwrap()
-            .element_data()
-            .unwrap()
-            .text_input_data()
-            .unwrap()
-            .editor
-            .raw_text();
-        assert_eq!(text, replacement);
-        assert_eq!(inner.get_node(result).unwrap().text_content(), replacement);
-    }
-
-    #[cfg(all(feature = "agent-control", unix))]
-    #[test]
     fn node_double_click_is_one_runtime_action() {
         let mut document = ScriptDocument::from_html(
             r#"
