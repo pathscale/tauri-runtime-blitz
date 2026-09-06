@@ -37,15 +37,22 @@ libc = "0.2"
 raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-tauri = { version = "2", default-features = false }
-tauri-runtime = "2"
-tauri-utils = "2"
+tauri = { version = "2", default-features = false, optional = true }
+tauri-runtime = { version = "2", optional = true }
+tauri-utils = { version = "2", optional = true }
 url = "2"
 winit = "0.31.0-beta.2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync"], optional = true }
 
 [features]
-default = ["agent-control"]
+default = ["agent-control", "runtime"]
+# The Tauri runtime itself: windows, webviews, the event loop. Everything that
+# needs a window lives behind this.
+#
+# Off, a headless consumer gets the inspection and activation surface with no
+# Tauri in its graph, which on Linux is the difference between a build and GTK
+# development headers for a binary that never opens a window.
+runtime = ["dep:tauri", "dep:tauri-runtime", "dep:tauri-utils"]
 agent-control = ["blitz-shell/debug-control", "dep:blitz-control-protocol", "dep:blitz-dom", "dep:blitz-traits", "dep:endpoint-libs", "dep:keyboard-types", "dep:serde", "dep:serde_json", "dep:tokio"]
 debug-control = ["blitz-script/debug-control", "blitz-shell/debug-control"]
 diagnostics = [
@@ -60,7 +67,7 @@ diagnostics = [
 # through a compute pass built for arbitrary vector art. The hybrid backend
 # does far less per primitive, which is the same bet GPUI makes.
 hybrid-renderer = ["dep:anyrender_vello_hybrid"]
-devtools = ["tauri-runtime/devtools"]
+devtools = ["runtime", "tauri-runtime/devtools"]
 # Forwarded, not an empty flag. `WindowBuilder::transparent` is declared behind
 # this feature in `tauri-runtime` and implemented behind it here, so enabling it
 # on only one side leaves the impl carrying a method the trait does not declare:
@@ -68,7 +75,7 @@ devtools = ["tauri-runtime/devtools"]
 # feature here meant `--all-features` turned this on without turning it on for
 # `tauri-runtime`, which is exactly that mismatch, and it is why this crate
 # could not be packaged: crates.io verifies with every feature enabled.
-macos-private-api = ["tauri/macos-private-api", "tauri-runtime/macos-private-api"]
+macos-private-api = ["runtime", "tauri/macos-private-api", "tauri-runtime/macos-private-api"]
 
 [dev-dependencies]
 tauri = { version = "2", default-features = false, features = ["test"] }
