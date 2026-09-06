@@ -29,6 +29,21 @@ jobs:
             -i blitz-control-protocol
       - name: Package the runtime without workspace-only dependencies
         run: cargo package -p tauri-runtime-blitz --no-verify
+      # Tauri on Linux is GTK, so the crate cannot even be type-checked here
+      # without its development headers.
+      - name: GTK development headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev
+      # This job named Linux and never compiled anything for it: `cargo tree`
+      # resolves without building and `cargo package --no-verify` skips the
+      # build by definition. So the crate stopped compiling on Linux and every
+      # check here stayed green, and it surfaced in a consumer instead, as four
+      # errors inside a dependency nobody had edited.
+      - name: Compile the runtime for Linux
+        run: cargo check -p tauri-runtime-blitz --features agent-control
 
   runtime:
     name: Runtime (macOS)

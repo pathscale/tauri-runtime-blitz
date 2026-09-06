@@ -2651,10 +2651,42 @@ fn register_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
                     }
                 }
                 *state_for_creation.native.lock().unwrap() = Some(native);
+                /*
+                 * Not on GTK platforms, where there is nothing to hand over.
+                 *
+                 * `RawWindow` is Tauri's escape hatch to the underlying native
+                 * window, and on Linux and the BSDs its shape is a
+                 * `gtk::ApplicationWindow` and a `gtk::Box`. This runtime draws
+                 * with Blitz and owns no GTK window at all, so those fields
+                 * cannot be filled with anything true, and constructing the
+                 * struct without them is what kept the crate from compiling
+                 * there: "missing `default_vbox` and `gtk_window`".
+                 *
+                 * Skipping the callback says the same thing honestly. An
+                 * embedder reaching for a GTK handle from a Blitz window is
+                 * asking for something that does not exist, and it is better
+                 * that its integration does not run than that it is handed a
+                 * window belonging to something else.
+                 */
+                #[cfg(not(any(
+                    target_os = "linux",
+                    target_os = "dragonfly",
+                    target_os = "freebsd",
+                    target_os = "netbsd",
+                    target_os = "openbsd"
+                )))]
                 if let Some(callback) = after_window_creation {
                     let marker = PhantomData;
                     callback(RawWindow { _marker: &marker });
                 }
+                #[cfg(any(
+                    target_os = "linux",
+                    target_os = "dragonfly",
+                    target_os = "freebsd",
+                    target_os = "netbsd",
+                    target_os = "openbsd"
+                ))]
+                drop(after_window_creation);
             });
     #[cfg(target_os = "macos")]
     NATIVE_SURFACE_TRANSPARENT.store(builder.config.transparent, Ordering::Release);
