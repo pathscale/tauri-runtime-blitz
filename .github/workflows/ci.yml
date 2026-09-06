@@ -16,7 +16,7 @@ env:
 jobs:
   protocol:
     name: Protocol dependency (Linux)
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-4
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -32,6 +32,14 @@ jobs:
 
   runtime:
     name: Runtime (macOS)
+    # Manual only. macOS runners are for building packages, not for routine
+    # checks: they are the expensive capacity, and running them on every push
+    # spends it on work Linux can do. Everything this job asserts about the
+    # crate is asserted on Linux by `protocol` and `headless`; what is left is
+    # the window runtime itself, which only matters when a release is being cut.
+    #
+    # `workflow_dispatch` to run it deliberately.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     # The organisation's macOS profile rather than a GitHub-hosted version.
     # Pinning a version meant the matrix carried an older runner that may never
     # be exercised again, and a check expected to be red is one nobody reads.
@@ -67,7 +75,7 @@ jobs:
   # dependency this feature exists to remove.
   headless:
     name: Headless surface (no runtime)
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-4
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
