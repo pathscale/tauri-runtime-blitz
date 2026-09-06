@@ -12,15 +12,20 @@ repository.workspace = true
 anyrender_vello = { package = "ps-anyrender-vello", version = "^0.14.0" }
 anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", version = "^0.10.0", optional = true }
 style = { version = "0.20.0", package = "stylo" }
-blitz-dom = { package = "ps-blitz-dom", version = "^0.4", optional = true, default-features = false, features = ["accessibility", "svg", "woff", "image-formats", "file-input", "custom-widget"] }
-# No `system-fonts`, in any configuration. It reaches `fontique/system` and, on
-# Linux, `yeslogic-fontconfig-sys`, which links a system library -- so enabling
-# it here would decide that every consumer of this crate needs one installed,
-# including a headless one that reads no font catalogue. Only on that target,
-# which is why it was invisible from macOS.
+# Plain defaults, which as of ps-blitz 0.4.4 no longer include `system-fonts`.
 #
-# An application that wants the machine's fonts asks for them itself, and both
-# consumers already do.
+# This first said `default-features = false` and then retyped the six remaining
+# defaults by hand to drop the seventh. ps-observability's release branch had
+# grown the identical list independently, which is what showed the problem was
+# not here: `system-fonts` should never have been a default of `blitz-dom`, and
+# every consumer copying its default list is a copy that goes stale the next
+# time a default is added. Fixed at the source in pathscale/ps-blitz#87.
+blitz-dom = { package = "ps-blitz-dom", version = "^0.4", optional = true }
+# No `system-fonts`. It reaches `fontique/system` and, on Linux, the
+# `yeslogic-fontconfig-sys` system library, so enabling it here would decide
+# that every consumer of this crate needs one installed, including a headless
+# one that reads no font catalogue. An application that wants the machine's
+# fonts asks for them itself, and both consumers already do.
 blitz-script = { package = "ps-blitz-script", version = "^0.4" }
 blitz-control-protocol = { version = "^0.4", optional = true }
 anyrender = { package = "ps-anyrender", version = "^0.13.0" }
@@ -60,11 +65,7 @@ default = ["agent-control", "runtime"]
 # Off, a headless consumer gets the inspection and activation surface with no
 # Tauri in its graph, which on Linux is the difference between a build and GTK
 # development headers for a binary that never opens a window.
-runtime = [
-    "dep:tauri",
-    "dep:tauri-runtime",
-    "dep:tauri-utils",
-]
+runtime = ["dep:tauri", "dep:tauri-runtime", "dep:tauri-utils"]
 agent-control = ["blitz-shell/debug-control", "dep:blitz-control-protocol", "dep:blitz-dom", "dep:blitz-traits", "dep:endpoint-libs", "dep:keyboard-types", "dep:serde", "dep:serde_json", "dep:tokio"]
 debug-control = ["blitz-script/debug-control", "blitz-shell/debug-control"]
 diagnostics = [
@@ -91,6 +92,22 @@ macos-private-api = ["runtime", "tauri/macos-private-api", "tauri-runtime/macos-
 
 [dev-dependencies]
 tauri = { version = "2", default-features = false, features = ["test"] }
+
+# Only on macOS, and only for the one test that needs a face:
+# `setting_a_node_value_replaces_text_and_dispatches_input`. Replacing a
+# field's contents rather than appending to them depends on select-all
+# selecting something, which depends on the text having shaped, so with no font
+# the typed string lands after the old one and the assertion fails for a reason
+# that has nothing to do with this crate.
+#
+# Scoped to the target because of where the face comes from. macOS resolves one
+# through Core Text: no `fontconfig`, nothing to install, no system library in
+# the graph. On Linux the same feature reaches `parley/system` and then
+# `yeslogic-fontconfig-sys`, so there the test is compiled out and this line
+# does not apply -- a Linux build of this crate, shipped or under test, links
+# nothing.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+blitz-dom = { package = "ps-blitz-dom", version = "^0.4", features = ["system-fonts"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 window-vibrancy = "0.8.0"
