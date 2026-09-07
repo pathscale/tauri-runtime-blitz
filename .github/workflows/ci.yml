@@ -92,12 +92,32 @@ jobs:
         run: |
           cargo clippy -p tauri-runtime-blitz \
             --no-default-features --features agent-control -- -D warnings
-      - name: No window stack in the graph
+      # Renderers as well as window stacks. This checked for `tauri`, GTK and
+      # WebKit and passed while the headless build linked wgpu, two versions of
+      # vello, naga and wgpu-hal: `anyrender_vello` was a hard dependency, so
+      # the only consumers who could reach it were the ones that could never
+      # use it. `mod runtime` is the sole user and was already behind the
+      # `runtime` feature, so nothing but the manifest had to change.
+      #
+      # `ps-anyrender-vello-cpu` is deliberately not banned. It arrives through
+      # `blitz-script` behind `debug-control`, which is what serves the
+      # `screenshot` endpoint, and rasterising is what that endpoint is for.
+      # Whether a pure inspection host should offer it at all is a separate
+      # question; this check is about not linking a GPU stack by accident.
+      #
+      # The target is pinned rather than inherited, so the answer does not
+      # depend on which runner this lands on.
+      - name: No window stack or GPU renderer in the graph
         run: |
           found=$(cargo tree -p tauri-runtime-blitz --edges normal \
+            --target x86_64-unknown-linux-gnu \
             --no-default-features --features agent-control \
-            | grep -ciE 'tauri v|gtk|glib|webkit|soup' || true)
+            | grep -ciE 'tauri v|gtk|glib|webkit|soup|wgpu|naga|ps-vello v|anyrender-vello v' || true)
           if [ "$found" != "0" ]; then
-            echo "the headless build pulled in $found window-stack crates" >&2
+            echo "the headless build pulled in $found window-stack or renderer crates" >&2
+            cargo tree -p tauri-runtime-blitz --edges normal \
+              --target x86_64-unknown-linux-gnu \
+              --no-default-features --features agent-control \
+              | grep -iE 'tauri v|gtk|glib|webkit|soup|wgpu|naga|ps-vello v|anyrender-vello v' >&2 || true
             exit 1
           fi

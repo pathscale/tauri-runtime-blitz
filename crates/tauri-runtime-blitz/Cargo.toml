@@ -9,7 +9,7 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
-anyrender_vello = { package = "ps-anyrender-vello", version = "^0.14.0" }
+anyrender_vello = { package = "ps-anyrender-vello", version = "^0.14.0", optional = true }
 anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", version = "^0.10.0", optional = true }
 style = { version = "0.20.0", package = "stylo" }
 # Plain defaults, which as of ps-blitz 0.4.4 no longer include `system-fonts`.
@@ -65,7 +65,22 @@ default = ["agent-control", "runtime"]
 # Off, a headless consumer gets the inspection and activation surface with no
 # Tauri in its graph, which on Linux is the difference between a build and GTK
 # development headers for a binary that never opens a window.
-runtime = ["dep:tauri", "dep:tauri-runtime", "dep:tauri-utils"]
+#
+# `anyrender_vello` belongs here too, and did not. `mod runtime` is the only
+# thing that names `VelloWindowRenderer`, and that module is already behind this
+# feature, so the renderer was reachable by exactly the consumers that could
+# never use it. A headless build linked wgpu, two versions of vello, naga and
+# wgpu-hal to serve a socket that reads a semantic tree.
+#
+# Same shape as `system-fonts` sitting in `blitz-dom`'s defaults: the intent was
+# written down in this comment, and nothing enforced it. The graph check below
+# now looks for renderers as well as window stacks.
+runtime = [
+    "dep:tauri",
+    "dep:tauri-runtime",
+    "dep:tauri-utils",
+    "dep:anyrender_vello",
+]
 agent-control = ["blitz-shell/debug-control", "dep:blitz-control-protocol", "dep:blitz-dom", "dep:blitz-traits", "dep:endpoint-libs", "dep:keyboard-types", "dep:serde", "dep:serde_json", "dep:tokio"]
 debug-control = ["blitz-script/debug-control", "blitz-shell/debug-control"]
 diagnostics = [
