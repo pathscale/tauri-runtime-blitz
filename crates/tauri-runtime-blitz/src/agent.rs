@@ -985,6 +985,47 @@ pub(crate) fn resolve_agent_node(
     document: &mut ScriptDocument,
     raw_node_id: u64,
 ) -> Result<(blitz_dom::NodeId, (f32, f32)), DebugError> {
+    resolve_agent_node_inner(document, raw_node_id, Area::Required)
+}
+
+/// Whether the caller needs the node to have a box a pointer could land in.
+#[cfg(all(feature = "agent-control", unix))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Area {
+    /// A real pointer is going to travel to this box, so it has to have one.
+    Required,
+    /// The event is delivered to the node itself, and the coordinate only
+    /// fills in `clientX`/`clientY` for a handler that reads them.
+    Optional,
+}
+
+/// Resolve a node to press, and the point to say the press happened at.
+///
+/// The area requirement is a parameter because the two callers want different
+/// things from it. `Hover` and the pointer moves genuinely travel to a
+/// coordinate, and a box with no area has no honest one. `Click` does not:
+/// [`activate_agent_node`] dispatches every phase with
+/// `DomEvent::new(node_id, ..)`, so the node is the target and the position is
+/// only the number the event carries.
+///
+/// Requiring area of both was one predicate standing for two facts, and it
+/// made a whole class of control unpressable for a reason that has nothing to
+/// do with whether pressing it works. A control sized entirely by its label --
+/// a bare `<a>`, a trigger with no padding -- lays out at zero height on a host
+/// with no font catalogue, which is what a Linux CI runner is. It is attached,
+/// styled visible, enabled, and its handler runs perfectly well; only the
+/// coordinate it would never use was missing.
+///
+/// What still refuses is everything about the node itself: it must exist, be
+/// attached with a valid layout ancestry, not be `display: none`,
+/// `visibility: hidden`, `hidden` or `aria-hidden`, and not be disabled. Those
+/// are the reasons a press should not land, and none of them is a box size.
+#[cfg(all(feature = "agent-control", unix))]
+pub(crate) fn resolve_agent_node_inner(
+    document: &mut ScriptDocument,
+    raw_node_id: u64,
+    area: Area,
+) -> Result<(blitz_dom::NodeId, (f32, f32)), DebugError> {
     let node_id = blitz_dom::NodeId::from_u64(raw_node_id);
     document.inner_mut().resolve(0.0);
     let inner = document.inner();
@@ -1011,8 +1052,18 @@ pub(crate) fn resolve_agent_node(
     }
     let rect = inner
         .get_client_bounding_rect(node_id)
-        .filter(|rect| rect.width > 0.0 && rect.height > 0.0)
-        .ok_or_else(|| debug_error("notInteractable", "node has no layout box"))?;
+        .filter(|rect| area == Area::Optional || (rect.width > 0.0 && rect.height > 0.0))
+        .ok_or_else(|| {
+            debug_error(
+                "notInteractable",
+                match area {
+                    // The node was never laid out at all, which is a different
+                    // thing from being laid out flat and is worth saying so.
+                    Area::Optional => "node has no layout box",
+                    Area::Required => "node has no layout box a pointer can reach",
+                },
+            )
+        })?;
     Ok((
         node_id,
         (
@@ -1021,6 +1072,7 @@ pub(crate) fn resolve_agent_node(
         ),
     ))
 }
+
 
 #[cfg(all(feature = "agent-control", unix))]
 pub(crate) fn pointer_event(
@@ -1439,7 +1491,12 @@ pub(crate) fn activate_agent_node(
     raw_node_id: u64,
     count: u8,
 ) -> Result<(f32, f32), DebugError> {
-    let (node_id, position) = resolve_agent_node(document, raw_node_id)?;
+    // `Area::Optional`: every phase below is dispatched with
+    // `DomEvent::new(node_id, ..)`, so the node is the target and `position`
+    // only fills in the coordinate the event carries. A control sized entirely
+    // by its label has no area on a host with no fonts and is still perfectly
+    // pressable.
+    let (node_id, position) = resolve_agent_node_inner(document, raw_node_id, Area::Optional)?;
     let focusable = document
         .inner()
         .get_node(node_id)
@@ -1479,4 +1536,93 @@ pub(crate) fn activate_agent_node(
         }
     }
     Ok(position)
+}
+
+#[cfg(all(test, feature = "agent-control", unix))]
+mod tests {
+    use super::*;
+    use blitz_dom::{Document, DocumentConfig};
+
+    /// A control whose whole size is its label, next to one with padding.
+    ///
+    /// `font-size: 0` stands in for the host this exists for: a Linux CI
+    /// runner with no font catalogue, where every glyph shapes to nothing and
+    /// a trigger with no padding lays out flat. Written as a style rather than
+    /// reproduced by removing fonts, so the test says what it is testing and
+    /// does not depend on which faces the machine running it happens to have.
+    fn document() -> ScriptDocument {
+        let mut document = ScriptDocument::from_html(
+            r#"<style>
+                 button { border: 0; padding: 0; margin: 0; font-size: 0; }
+                 #padded { padding: 8px 12px; }
+               </style>
+               <button id="flat">Open dialog</button>
+               <button id="padded">Open dialog</button>"#,
+            DocumentConfig::default(),
+        );
+        document.inner_mut().resolve(0.0);
+        document
+    }
+
+    fn node_id(document: &ScriptDocument, selector: &str) -> u64 {
+        document
+            .inner()
+            .query_selector(selector)
+            .unwrap()
+            .expect("the fixture should contain the selector")
+            .as_u64()
+    }
+
+    #[test]
+    fn a_control_with_no_area_is_still_pressable() {
+        let mut document = document();
+        let flat = node_id(&document, "#flat");
+        // The premise: this really is the degenerate case, not an accident of
+        // the fixture. Without it a passing test proves nothing.
+        let rect = document.inner().get_client_bounding_rect(
+            blitz_dom::NodeId::from_u64(flat),
+        );
+        assert!(
+            rect.is_some_and(|rect| rect.width == 0.0 || rect.height == 0.0),
+            "the flat button should lay out with no area"
+        );
+
+        activate_agent_node(&mut document, flat, 1)
+            .expect("a click is dispatched at the node, so it needs no area");
+    }
+
+    #[test]
+    fn a_control_with_no_area_still_refuses_a_pointer() {
+        let mut document = document();
+        let flat = node_id(&document, "#flat");
+        // The other half of the split: `Hover` moves a real pointer to a
+        // coordinate, and a flat box has no honest one. Keeping this failing
+        // is the point -- it is why the area requirement became a parameter
+        // rather than being deleted.
+        let error = hover_agent_node(&mut document, flat)
+            .expect_err("hover needs a box a pointer can land in");
+        assert!(
+            error.message.contains("no layout box"),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_hidden_control_is_still_refused() {
+        // The area gate was doing double duty. Deleting it for clicks must not
+        // have opened the door to a control the author hid, which is what the
+        // visibility gate above it is for.
+        let mut document = ScriptDocument::from_html(
+            r#"<button id="gone" style="display: none">Open dialog</button>"#,
+            DocumentConfig::default(),
+        );
+        document.inner_mut().resolve(0.0);
+        let gone = node_id(&document, "#gone");
+        let error = activate_agent_node(&mut document, gone, 1)
+            .expect_err("a display:none control must stay unpressable");
+        assert!(
+            error.message.contains("not visible"),
+            "unexpected error: {error:?}"
+        );
+    }
 }
