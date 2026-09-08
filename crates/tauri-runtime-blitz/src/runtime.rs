@@ -1753,6 +1753,59 @@ mod tests {
         assert_eq!(named("scripted"), "Docs", "and neither is a script");
     }
 
+    /// Two stacked lines make two words, not one run-on word.
+    ///
+    /// crates.vip's failure alert is a column of two block-level lines, and it
+    /// arrived named "This page could not loadWebSocket connection failed":
+    /// every text node was concatenated with nothing between it and the next.
+    /// A name a person cannot read is a name a check cannot address.
+    ///
+    /// The inline case is the other half of the assertion, and it is what
+    /// stops the fix being "put a space everywhere": a name built from two
+    /// spans is still one word, because that is what the page draws.
+    #[test]
+    fn stacked_lines_are_separated_and_inline_ones_are_not() {
+        let mut document = ScriptDocument::from_html(
+            "<main>\
+               <div id='stacked' role='alert'>\
+                 <div>This page could not load</div>\
+                 <div>WebSocket connection failed</div>\
+               </div>\
+               <div id='inline' role='alert'><span>Work</span><span>Tables</span></div>\
+             </main>",
+            DocumentConfig::default(),
+        );
+        document.inner_mut().resolve(0.0);
+        let inner = document.inner();
+        let labels = crate::agent::LabelIndex::build(&inner);
+        let named = |value: &str| {
+            let id = inner
+                .tree()
+                .iter()
+                .find_map(|(id, node)| {
+                    node.element_data()
+                        .is_some_and(|element| element_attr(element, "id") == Some(value))
+                        .then_some(id)
+                })
+                .unwrap();
+            let node = inner.get_node(id).unwrap();
+            let element = node.element_data().unwrap();
+            let role = semantic_role(element);
+            semantic_name(element, node, &role, &inner, id, &labels)
+        };
+
+        assert_eq!(
+            named("stacked"),
+            "This page could not load WebSocket connection failed",
+            "block-level lines are separate words"
+        );
+        assert_eq!(
+            named("inline"),
+            "WorkTables",
+            "inline spans are one word, as the page draws them"
+        );
+    }
+
     /// A form control is named by the label pointing at it.
     ///
     /// The name came from `aria-label`, `alt` and `title` and from nothing
