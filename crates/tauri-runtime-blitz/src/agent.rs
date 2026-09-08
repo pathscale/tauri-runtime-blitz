@@ -300,6 +300,10 @@ pub fn snapshot_document(
     let inner = document.inner();
     let layout_node_limit = inner.tree().iter().count();
     let active_element = inner.get_focussed_node_id().map(|id| id.as_u64());
+    // Once for the whole snapshot: the question a control asks is "which label
+    // points at me", and answering it from the control costs a document scan
+    // each time.
+    let labels = LabelIndex::build(&inner);
     let nodes: Vec<SemanticNode> = inner
         .tree()
         .iter()
@@ -335,7 +339,7 @@ pub fn snapshot_document(
                 dom_id: element_attr(element, "id").map(str::to_owned),
                 id: id.as_u64(),
                 parent: semantic_parent(&inner, id, None).map(|id| id.as_u64()),
-                name: semantic_name(element, node, &role),
+                name: semantic_name(element, node, &role, &inner, id, &labels),
                 role,
                 value,
                 enabled: element_attr(element, "disabled").is_none()
@@ -518,19 +522,117 @@ pub(crate) fn semantic_role(element: &blitz_dom::ElementData) -> String {
     .into()
 }
 
+/// Where the labels are, so a control can be asked what names it.
+///
+/// # Why this exists
+///
+/// A name was computed from `aria-label`, `alt` and `title` and from nothing
+/// else, so the ordinary way to label a form control -- a `<label for>` beside
+/// it, or a `<label>` wrapped around it -- produced no name at all. Every text
+/// field on every page in the fleet arrived in the semantic tree anonymous.
+///
+/// That is not only a reporting defect. A harness addresses a control by name,
+/// so an anonymous field cannot be typed into, and a check that means "enter a
+/// URL and save" cannot be written. Measured on support.cafe's connection
+/// settings: three `Input.Field`s, each with a correct `<Label for>` beside it,
+/// all three reported as `textbox ""`.
+///
+/// Built once per snapshot rather than searched per node, because the lookup is
+/// "which label points at me" and answering that from the control costs a scan
+/// of the document each time.
+#[cfg(all(feature = "agent-control", unix))]
+pub(crate) struct LabelIndex {
+    /// The `for` attribute's value, to that label's text.
+    by_control_id: std::collections::HashMap<String, String>,
+    /// Labels by node id, so an ancestor walk can recognise one it is inside.
+    labels: std::collections::HashMap<blitz_dom::NodeId, String>,
+}
+
+#[cfg(all(feature = "agent-control", unix))]
+impl LabelIndex {
+    pub(crate) fn build(document: &blitz_dom::BaseDocument) -> Self {
+        let mut by_control_id = std::collections::HashMap::new();
+        let mut labels = std::collections::HashMap::new();
+        for (id, node) in document.tree().iter() {
+            let Some(element) = node.element_data() else {
+                continue;
+            };
+            if element.name.local.as_ref() != "label" {
+                continue;
+            }
+            let text = node.text_content();
+            if let Some(control) = element_attr(element, "for") {
+                by_control_id.insert(control.to_owned(), text.clone());
+            }
+            labels.insert(id, text);
+        }
+        Self {
+            by_control_id,
+            labels,
+        }
+    }
+
+    /// The label text for a control, by association or by containment.
+    ///
+    /// `for` first, matching the order a browser resolves them in: an explicit
+    /// association wins over the label the control happens to sit inside.
+    fn name_for(
+        &self,
+        document: &blitz_dom::BaseDocument,
+        id: blitz_dom::NodeId,
+        element: &blitz_dom::ElementData,
+    ) -> Option<String> {
+        if let Some(dom_id) = element_attr(element, "id")
+            && let Some(text) = self.by_control_id.get(dom_id)
+        {
+            return Some(text.clone());
+        }
+        // A wrapping label, walked outward. Bounded rather than open, because
+        // a malformed tree must not cost a traversal per node.
+        let mut current = document.get_node(id)?.parent;
+        for _ in 0..16 {
+            let ancestor = current?;
+            if let Some(text) = self.labels.get(&ancestor) {
+                return Some(text.clone());
+            }
+            current = document.get_node(ancestor)?.parent;
+        }
+        None
+    }
+}
+
 #[cfg(all(feature = "agent-control", unix))]
 pub(crate) fn semantic_name(
     element: &blitz_dom::ElementData,
     node: &blitz_dom::Node,
     role: &str,
+    document: &blitz_dom::BaseDocument,
+    id: blitz_dom::NodeId,
+    labels: &LabelIndex,
 ) -> String {
     let name = element_attr(element, "aria-label")
-        .or_else(|| element_attr(element, "alt"))
-        .or_else(|| element_attr(element, "title"))
         .map(std::borrow::Cow::Borrowed)
+        // The label a form control was given. After `aria-label`, which is the
+        // author overriding the visible text on purpose, and before `title`,
+        // which is a tooltip rather than a name.
+        .or_else(|| {
+            labels
+                .name_for(document, id, element)
+                .map(std::borrow::Cow::Owned)
+        })
+        .or_else(|| element_attr(element, "alt").map(std::borrow::Cow::Borrowed))
+        .or_else(|| element_attr(element, "title").map(std::borrow::Cow::Borrowed))
         .or_else(|| {
             matches!(role, "button" | "link" | "heading" | "option")
                 .then(|| std::borrow::Cow::Owned(node.text_content()))
+        })
+        // A placeholder is the last resort a browser falls back to, and it is
+        // the only thing naming a great many search and filter fields. Last, so
+        // it never displaces a real label.
+        .or_else(|| {
+            matches!(role, "textbox" | "combobox")
+                .then(|| element_attr(element, "placeholder").map(std::borrow::Cow::Borrowed))
+                .flatten()
         })
         .unwrap_or_default();
     let mut normalized = String::with_capacity(name.len().min(512));
@@ -833,6 +935,10 @@ pub fn inspect_document(
         return control_error("unknownNode", "the requested root node does not exist");
     }
     let focused_node = inner.get_focussed_node_id().map(|id| id.as_u64());
+    // Built over the whole document even when a subtree was asked for: a label
+    // is frequently a sibling of the control rather than a descendant of the
+    // node the caller rooted at.
+    let labels = LabelIndex::build(&inner);
     let node_limit = inner.tree().iter().count();
     let candidates = if let Some(root) = root {
         semantic_subtree_ids(&inner, root, max_depth)
@@ -865,7 +971,7 @@ pub fn inspect_document(
                     .as_ref()
                     .is_some_and(|rect| rect.width > 0.0 && rect.height > 0.0);
             let role = semantic_role(element);
-            let name = semantic_name(element, node, &role);
+            let name = semantic_name(element, node, &role, &inner, id, &labels);
             let value = semantic_value(element);
             Some(SemanticNode {
                 dom_id: element_attr(element, "id").map(str::to_owned),
@@ -1072,7 +1178,6 @@ pub(crate) fn resolve_agent_node_inner(
         ),
     ))
 }
-
 
 #[cfg(all(feature = "agent-control", unix))]
 pub(crate) fn pointer_event(
@@ -1579,9 +1684,9 @@ mod tests {
         let flat = node_id(&document, "#flat");
         // The premise: this really is the degenerate case, not an accident of
         // the fixture. Without it a passing test proves nothing.
-        let rect = document.inner().get_client_bounding_rect(
-            blitz_dom::NodeId::from_u64(flat),
-        );
+        let rect = document
+            .inner()
+            .get_client_bounding_rect(blitz_dom::NodeId::from_u64(flat));
         assert!(
             rect.is_some_and(|rect| rect.width == 0.0 || rect.height == 0.0),
             "the flat button should lay out with no area"

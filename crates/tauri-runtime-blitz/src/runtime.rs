@@ -1699,7 +1699,70 @@ mod tests {
         let shown_node = inner.get_node(shown).unwrap();
         let shown_element = shown_node.element_data().unwrap();
         assert_eq!(semantic_role(shown_element), "button");
-        assert_eq!(semantic_name(shown_element, shown_node, "button"), "Run");
+        let labels = crate::agent::LabelIndex::build(&inner);
+        assert_eq!(
+            semantic_name(shown_element, shown_node, "button", &inner, shown, &labels),
+            "Run"
+        );
+    }
+
+    /// A form control is named by the label pointing at it.
+    ///
+    /// The name came from `aria-label`, `alt` and `title` and from nothing
+    /// else, so the ordinary way to label a field produced no name at all and
+    /// every text input on every page arrived anonymous. That is not only a
+    /// reporting defect: a harness addresses a control by name, so an
+    /// anonymous field cannot be typed into and a check that means "enter a URL
+    /// and save" cannot be written.
+    ///
+    /// Measured on support.cafe's connection settings, whose three fields each
+    /// carry a correct `<Label for>` and all reported as `textbox ""`.
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn a_field_is_named_by_its_label() {
+        let mut document = ScriptDocument::from_html(
+            "<main>\
+               <label for='endpoint'>Endpoint URL</label><input id='endpoint'>\
+               <label>Wrapped<input id='wrapped'></label>\
+               <label for='overridden'>Ignored</label>\
+               <input id='overridden' aria-label='Author own name'>\
+               <input id='placeheld' placeholder='Search everything'>\
+               <input id='nameless'>\
+             </main>",
+            DocumentConfig::default(),
+        );
+        document.inner_mut().resolve(0.0);
+        let inner = document.inner();
+        let labels = crate::agent::LabelIndex::build(&inner);
+        let named = |value: &str| {
+            let id = inner
+                .tree()
+                .iter()
+                .find_map(|(id, node)| {
+                    node.element_data()
+                        .is_some_and(|element| element_attr(element, "id") == Some(value))
+                        .then_some(id)
+                })
+                .unwrap();
+            let node = inner.get_node(id).unwrap();
+            let element = node.element_data().unwrap();
+            let role = semantic_role(element);
+            semantic_name(element, node, &role, &inner, id, &labels)
+        };
+
+        assert_eq!(named("endpoint"), "Endpoint URL", "a `for` association");
+        assert_eq!(named("wrapped"), "Wrapped", "a label wrapped around it");
+        assert_eq!(
+            named("overridden"),
+            "Author own name",
+            "`aria-label` is the author overriding the visible text, and wins"
+        );
+        assert_eq!(
+            named("placeheld"),
+            "Search everything",
+            "a placeholder is the last resort, and names most search fields"
+        );
+        assert_eq!(named("nameless"), "", "nothing names it, so it has no name");
     }
 
     #[cfg(all(feature = "agent-control", unix))]
