@@ -1706,6 +1706,53 @@ mod tests {
         );
     }
 
+    /// A name is made of rendered text, so a `<style>` inside a link is not
+    /// part of it.
+    ///
+    /// `textContent` is the DOM property and includes every text node in the
+    /// subtree, stylesheets and scripts among them. An accessible name does
+    /// not, because those elements are not rendered.
+    ///
+    /// Measured on honey.id, whose header logo is an anchor wrapping an inline
+    /// SVG with a `<style>` in it. The home link arrived named
+    /// ".animated-logo path { fill-opacity: 0; ... }", which is unusable to a
+    /// person and unaddressable to a check.
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn a_style_element_is_not_part_of_a_name() {
+        let mut document = ScriptDocument::from_html(
+            "<main>\
+               <a id='logo' href='/'>\
+                 <svg><style>.logo path { fill: red; }</style></svg>\
+                 Honey\
+               </a>\
+               <a id='scripted' href='/x'><script>var noise = 1;</script>Docs</a>\
+             </main>",
+            DocumentConfig::default(),
+        );
+        document.inner_mut().resolve(0.0);
+        let inner = document.inner();
+        let labels = crate::agent::LabelIndex::build(&inner);
+        let named = |value: &str| {
+            let id = inner
+                .tree()
+                .iter()
+                .find_map(|(id, node)| {
+                    node.element_data()
+                        .is_some_and(|element| element_attr(element, "id") == Some(value))
+                        .then_some(id)
+                })
+                .unwrap();
+            let node = inner.get_node(id).unwrap();
+            let element = node.element_data().unwrap();
+            let role = semantic_role(element);
+            semantic_name(element, node, &role, &inner, id, &labels)
+        };
+
+        assert_eq!(named("logo"), "Honey", "a stylesheet is not part of a name");
+        assert_eq!(named("scripted"), "Docs", "and neither is a script");
+    }
+
     /// A form control is named by the label pointing at it.
     ///
     /// The name came from `aria-label`, `alt` and `title` and from nothing
