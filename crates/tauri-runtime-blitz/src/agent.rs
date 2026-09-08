@@ -710,7 +710,30 @@ pub(crate) fn semantic_name(
         .or_else(|| {
             matches!(
                 role,
-                "button" | "link" | "heading" | "option" | "alert" | "status"
+                "button"
+                    | "link"
+                    | "heading"
+                    | "option"
+                    | "alert"
+                    | "status"
+                    // The menu, tab and tree equivalents of `option`. ARIA names all
+                    // of these from their own content, and leaving them out
+                    // made every dropdown item in the fleet anonymous: a
+                    // `<button role="menuitem">Platform Admin</button>` came
+                    // back with an empty name, so a screen reader announced
+                    // nothing and no check could name the option it meant to
+                    // press. `semantic_role` returns the `role` attribute
+                    // verbatim, so an author who writes one of these opts out
+                    // of the native naming this list is meant to provide.
+                    //
+                    // Still deliberately absent: `cell` and `row`. Their
+                    // content is a whole subtree, which is the same objection
+                    // the comment above raises against `generic`.
+                    | "menuitem"
+                    | "menuitemcheckbox"
+                    | "menuitemradio"
+                    | "tab"
+                    | "treeitem"
             )
             .then(|| std::borrow::Cow::Owned(name_text(node, document)))
         })
