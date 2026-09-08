@@ -611,9 +611,30 @@ impl LabelIndex {
 ///
 /// Measured on honey.id, whose header logo is an anchor wrapping an inline SVG
 /// with a `<style>` in it. The site's home link arrived named
-/// ".animated-logo path { fill-opacity: 0; stroke: currentColor; ... }", which
-/// is unusable to a person and unaddressable to a check.
+/// ".animated-logo path { fill-opacity: 0; stroke: currentColor; ... }",
+/// which is unusable to a person and unaddressable to a check.
+///
+/// Measured on crates.vip, whose failure alert stacks two block-level lines.
+/// It arrived named "This page could not loadWebSocket connection failed",
+/// because every text node was concatenated with nothing between it and the
+/// next. A browser puts a space there: accname appends each descendant's
+/// contribution separated by a space unless the descendant is inline, which
+/// is why "<span>a</span><span>b</span>" is still "ab".
 fn name_text(node: &blitz_dom::Node, document: &blitz_dom::BaseDocument) -> String {
+    /// Whether this node's contribution runs into its siblings' or stands
+    /// apart from them. Text and inline-level elements run together; anything
+    /// laid out as a block, a flex item's container, a table cell and so on
+    /// is a separate run. An element with no resolved style is treated as
+    /// inline, which keeps a name from gaining spaces that are not there.
+    fn is_inline(node: &blitz_dom::Node) -> bool {
+        if node.element_data().is_none() {
+            return true;
+        }
+        node.primary_styles().is_none_or(|styles| {
+            styles.clone_display().outside() == style::values::specified::box_::DisplayOutside::Inline
+        })
+    }
+
     fn write(node: &blitz_dom::Node, document: &blitz_dom::BaseDocument, out: &mut String) {
         if let Some(element) = node.element_data()
             && matches!(
@@ -627,8 +648,18 @@ fn name_text(node: &blitz_dom::Node, document: &blitz_dom::BaseDocument) -> Stri
             out.push_str(&text.content);
         }
         for child in &node.children {
-            if let Some(child) = document.get_node(*child) {
-                write(child, document, out);
+            let Some(child) = document.get_node(*child) else {
+                continue;
+            };
+            // A boundary either side, so a block between two others is
+            // separated from both. `normalize_name` collapses the runs.
+            let separate = !is_inline(child);
+            if separate {
+                out.push(' ');
+            }
+            write(child, document, out);
+            if separate {
+                out.push(' ');
             }
         }
     }
