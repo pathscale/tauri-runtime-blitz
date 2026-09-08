@@ -627,11 +627,18 @@ fn name_text(node: &blitz_dom::Node, document: &blitz_dom::BaseDocument) -> Stri
     /// is a separate run. An element with no resolved style is treated as
     /// inline, which keeps a name from gaining spaces that are not there.
     fn is_inline(node: &blitz_dom::Node) -> bool {
+        use style::values::specified::box_::{DisplayInside, DisplayOutside};
         if node.element_data().is_none() {
             return true;
         }
         node.primary_styles().is_none_or(|styles| {
-            styles.clone_display().outside() == style::values::specified::box_::DisplayOutside::Inline
+            let display = styles.clone_display();
+            // Inline flow only. `inline-block` and `inline-flex` are atomic
+            // inlines: they establish their own box and a browser separates
+            // them from their siblings, which is the same rule
+            // `dom-accessibility-api` applies by comparing the computed
+            // display against the string "inline".
+            display.outside() == DisplayOutside::Inline && display.inside() == DisplayInside::Flow
         })
     }
 

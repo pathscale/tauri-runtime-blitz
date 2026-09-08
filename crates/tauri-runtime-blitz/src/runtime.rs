@@ -1762,6 +1762,10 @@ mod tests {
     ///
     /// The inline case is the other half of the assertion, and it is what
     /// stops the fix being "put a space everywhere": a name built from two
+    ///
+    /// `inline-block` is the third case, and it is why the test is not
+    /// "outside is inline": an atomic inline establishes its own box, so a
+    /// browser separates it the way it separates a block.
     /// spans is still one word, because that is what the page draws.
     #[test]
     fn stacked_lines_are_separated_and_inline_ones_are_not() {
@@ -1772,6 +1776,10 @@ mod tests {
                  <div>WebSocket connection failed</div>\
                </div>\
                <div id='inline' role='alert'><span>Work</span><span>Tables</span></div>\
+               <div id='atomic' role='alert'>\
+                 <span style='display: inline-block'>Registry</span>\
+                 <span style='display: inline-block'>unavailable</span>\
+               </div>\
              </main>",
             DocumentConfig::default(),
         );
@@ -1803,6 +1811,11 @@ mod tests {
             named("inline"),
             "WorkTables",
             "inline spans are one word, as the page draws them"
+        );
+        assert_eq!(
+            named("atomic"),
+            "Registry unavailable",
+            "an inline-block is an atomic inline, and a browser separates it"
         );
     }
 
