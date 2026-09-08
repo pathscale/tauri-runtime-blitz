@@ -622,9 +622,24 @@ pub(crate) fn semantic_name(
         })
         .or_else(|| element_attr(element, "alt").map(std::borrow::Cow::Borrowed))
         .or_else(|| element_attr(element, "title").map(std::borrow::Cow::Borrowed))
+        // Named by their own content.
+        //
+        // `alert` and `status` are here because they are the roles an
+        // application uses to say something happened -- a refusal, a saved
+        // confirmation -- and what they say is their content. Without them a
+        // live region arrives anonymous, so "the reason is shown" is not a
+        // question that can be asked, and every validation outcome in a suite
+        // has to be approximated by something else that moved.
+        //
+        // Deliberately not `generic`. A wrapper's text content is its entire
+        // subtree, so naming those would give every container on the page a
+        // name made of the whole page.
         .or_else(|| {
-            matches!(role, "button" | "link" | "heading" | "option")
-                .then(|| std::borrow::Cow::Owned(node.text_content()))
+            matches!(
+                role,
+                "button" | "link" | "heading" | "option" | "alert" | "status"
+            )
+            .then(|| std::borrow::Cow::Owned(node.text_content()))
         })
         // A placeholder is the last resort a browser falls back to, and it is
         // the only thing naming a great many search and filter fields. Last, so
