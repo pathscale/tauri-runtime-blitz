@@ -602,6 +602,41 @@ impl LabelIndex {
 }
 
 #[cfg(all(feature = "agent-control", unix))]
+/// The text a name is made of, which is not the same as `textContent`.
+///
+/// `textContent` is the DOM property and includes every text node under the
+/// element, `<style>` and `<script>` among them. An accessible name does not:
+/// those elements are not rendered, and a name computation that walks into
+/// them reads out a stylesheet.
+///
+/// Measured on honey.id, whose header logo is an anchor wrapping an inline SVG
+/// with a `<style>` in it. The site's home link arrived named
+/// ".animated-logo path { fill-opacity: 0; stroke: currentColor; ... }", which
+/// is unusable to a person and unaddressable to a check.
+fn name_text(node: &blitz_dom::Node, document: &blitz_dom::BaseDocument) -> String {
+    fn write(node: &blitz_dom::Node, document: &blitz_dom::BaseDocument, out: &mut String) {
+        if let Some(element) = node.element_data()
+            && matches!(
+                element.name.local.as_ref(),
+                "style" | "script" | "template" | "noscript"
+            )
+        {
+            return;
+        }
+        if let blitz_dom::node::NodeData::Text(text) = &node.data {
+            out.push_str(&text.content);
+        }
+        for child in &node.children {
+            if let Some(child) = document.get_node(*child) {
+                write(child, document, out);
+            }
+        }
+    }
+    let mut out = String::new();
+    write(node, document, &mut out);
+    out
+}
+
 pub(crate) fn semantic_name(
     element: &blitz_dom::ElementData,
     node: &blitz_dom::Node,
@@ -639,7 +674,7 @@ pub(crate) fn semantic_name(
                 role,
                 "button" | "link" | "heading" | "option" | "alert" | "status"
             )
-            .then(|| std::borrow::Cow::Owned(node.text_content()))
+            .then(|| std::borrow::Cow::Owned(name_text(node, document)))
         })
         // A placeholder is the last resort a browser falls back to, and it is
         // the only thing naming a great many search and filter fields. Last, so
