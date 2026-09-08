@@ -1765,6 +1765,57 @@ mod tests {
         assert_eq!(named("nameless"), "", "nothing names it, so it has no name");
     }
 
+    /// A live region is named by what it says.
+    ///
+    /// `alert` and `status` are the roles an application uses to report that
+    /// something happened -- a refusal, a saved confirmation -- and what they
+    /// report is their content. Anonymous, "the reason is shown" is not a
+    /// question a check can ask, so every validation outcome has to be
+    /// approximated by something else that moved.
+    ///
+    /// The negative half is the point of the test. A wrapper's text content is
+    /// its whole subtree, so naming generic containers would give every one of
+    /// them a name made of the entire page, and any name-matching selector
+    /// would then match everything.
+    #[cfg(all(feature = "agent-control", unix))]
+    #[test]
+    fn a_live_region_is_named_by_what_it_says() {
+        let mut document = ScriptDocument::from_html(
+            "<main>\
+               <p id='refusal' role='alert'>that is not an address</p>\
+               <p id='saved' role='status'>Settings saved</p>\
+               <div id='wrapper'><span>inner text</span></div>\
+             </main>",
+            DocumentConfig::default(),
+        );
+        document.inner_mut().resolve(0.0);
+        let inner = document.inner();
+        let labels = crate::agent::LabelIndex::build(&inner);
+        let named = |value: &str| {
+            let id = inner
+                .tree()
+                .iter()
+                .find_map(|(id, node)| {
+                    node.element_data()
+                        .is_some_and(|element| element_attr(element, "id") == Some(value))
+                        .then_some(id)
+                })
+                .unwrap();
+            let node = inner.get_node(id).unwrap();
+            let element = node.element_data().unwrap();
+            let role = semantic_role(element);
+            semantic_name(element, node, &role, &inner, id, &labels)
+        };
+
+        assert_eq!(named("refusal"), "that is not an address");
+        assert_eq!(named("saved"), "Settings saved");
+        assert_eq!(
+            named("wrapper"),
+            "",
+            "a container named by its subtree would make every selector match everything"
+        );
+    }
+
     #[cfg(all(feature = "agent-control", unix))]
     #[test]
     fn rooted_inspection_returns_only_the_requested_dom_subtree() {
