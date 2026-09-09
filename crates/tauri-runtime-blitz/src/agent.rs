@@ -701,6 +701,60 @@ fn name_text(node: &blitz_dom::Node, document: &blitz_dom::BaseDocument) -> Stri
     out
 }
 
+/// Whether a role takes its accessible name from its own subtree when the
+/// author wrote no explicit one.
+///
+/// ARIA's *nameFrom: author, contents*, and nothing else. The list is closed on
+/// purpose: a role that is not on it is named only by what the author declared,
+/// because a container's text content is its whole subtree and naming those
+/// would give every wrapper on a page a name made of the page.
+///
+/// `alert` and `status` are here because they are the roles an application uses
+/// to say something happened -- a refusal, a saved confirmation -- and what they
+/// say is their content. Without them a live region arrives anonymous, so "the
+/// reason is shown" is not a question a suite can ask, and every validation
+/// outcome has to be approximated by something else that moved.
+///
+/// `menuitem`, `tab` and `treeitem` are the menu, tab and tree equivalents of
+/// `option`. Leaving them out made every dropdown item in the fleet anonymous:
+/// a `<button role="menuitem">Platform Admin</button>` came back with an empty
+/// name, so nothing was announced and no check could name the option it meant
+/// to press.
+///
+/// The table roles are here because ARIA gives all five of them
+/// *nameFrom: contents*, and their absence is why whole tables of crate names,
+/// versions and column types were unreadable: the cells were in the tree and
+/// every one of them was anonymous, which reads from outside as a table that is
+/// not in the tree at all. A row's name being the run of its cells is not an
+/// accident of that rule, it is the rule: it is what a screen reader announces
+/// when the caret enters the row.
+///
+/// `semantic_role` returns a `role` attribute verbatim, so an author who writes
+/// one of these opts into the naming this list provides.
+#[cfg(all(feature = "agent-control", unix))]
+pub(crate) fn names_from_contents(role: &str) -> bool {
+    matches!(
+        role,
+        "button"
+            | "link"
+            | "heading"
+            | "option"
+            | "alert"
+            | "status"
+            | "menuitem"
+            | "menuitemcheckbox"
+            | "menuitemradio"
+            | "tab"
+            | "treeitem"
+            | "cell"
+            | "gridcell"
+            | "columnheader"
+            | "rowheader"
+            | "row"
+    )
+}
+
+#[cfg(all(feature = "agent-control", unix))]
 pub(crate) fn semantic_name(
     element: &blitz_dom::ElementData,
     node: &blitz_dom::Node,
@@ -722,46 +776,8 @@ pub(crate) fn semantic_name(
         .or_else(|| element_attr(element, "alt").map(std::borrow::Cow::Borrowed))
         .or_else(|| element_attr(element, "title").map(std::borrow::Cow::Borrowed))
         // Named by their own content.
-        //
-        // `alert` and `status` are here because they are the roles an
-        // application uses to say something happened -- a refusal, a saved
-        // confirmation -- and what they say is their content. Without them a
-        // live region arrives anonymous, so "the reason is shown" is not a
-        // question that can be asked, and every validation outcome in a suite
-        // has to be approximated by something else that moved.
-        //
-        // Deliberately not `generic`. A wrapper's text content is its entire
-        // subtree, so naming those would give every container on the page a
-        // name made of the whole page.
         .or_else(|| {
-            matches!(
-                role,
-                "button"
-                    | "link"
-                    | "heading"
-                    | "option"
-                    | "alert"
-                    | "status"
-                    // The menu, tab and tree equivalents of `option`. ARIA names all
-                    // of these from their own content, and leaving them out
-                    // made every dropdown item in the fleet anonymous: a
-                    // `<button role="menuitem">Platform Admin</button>` came
-                    // back with an empty name, so a screen reader announced
-                    // nothing and no check could name the option it meant to
-                    // press. `semantic_role` returns the `role` attribute
-                    // verbatim, so an author who writes one of these opts out
-                    // of the native naming this list is meant to provide.
-                    //
-                    // Still deliberately absent: `cell` and `row`. Their
-                    // content is a whole subtree, which is the same objection
-                    // the comment above raises against `generic`.
-                    | "menuitem"
-                    | "menuitemcheckbox"
-                    | "menuitemradio"
-                    | "tab"
-                    | "treeitem"
-            )
-            .then(|| std::borrow::Cow::Owned(name_text(node, document)))
+            names_from_contents(role).then(|| std::borrow::Cow::Owned(name_text(node, document)))
         })
         // A placeholder is the last resort a browser falls back to, and it is
         // the only thing naming a great many search and filter fields. Last, so
@@ -1920,18 +1936,37 @@ mod semantic_tests {
             1,
             "a `<th scope=\"col\">` is a column header, not an ordinary cell"
         );
+        assert_eq!(roles(&nodes, "cell").len(), 1, "only the `<td>` is a cell");
+    }
+
+    #[test]
+    fn a_cell_is_named_by_what_it_holds() {
+        let nodes = tree(REPRO);
         assert_eq!(
-            roles(&nodes, "cell").len(),
-            1,
-            "only the `<td>` is a cell"
+            names(&nodes, "cell"),
+            vec!["worktable".to_string()],
+            "a data cell's text is its accessible name, so a table of values is readable"
+        );
+        assert_eq!(
+            names(&nodes, "columnheader"),
+            vec!["Crate".to_string()],
+            "a header cell is named by its content too"
+        );
+    }
+
+    #[test]
+    fn a_row_is_named_by_its_cells() {
+        let nodes = tree(REPRO);
+        assert_eq!(
+            names(&nodes, "row"),
+            vec!["Crate".to_string(), "worktable".to_string()],
+            "a row is named from its contents, which is what makes a table row addressable"
         );
     }
 
     #[test]
     fn a_row_scoped_header_is_a_row_header() {
-        let nodes = tree(
-            r#"<table><tr><th scope="row">Crate</th><td>worktable</td></tr></table>"#,
-        );
+        let nodes = tree(r#"<table><tr><th scope="row">Crate</th><td>worktable</td></tr></table>"#);
         assert_eq!(
             roles(&nodes, "rowheader").len(),
             1,
