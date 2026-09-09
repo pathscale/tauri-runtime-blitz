@@ -490,8 +490,20 @@ pub(crate) fn element_attr<'a>(element: &'a blitz_dom::ElementData, name: &str) 
 
 #[cfg(all(feature = "agent-control", unix))]
 pub(crate) fn semantic_role(element: &blitz_dom::ElementData) -> String {
+    semantic_role_ref(element).to_owned()
+}
+
+/// The same answer without owning it.
+///
+/// A text node asks every element above it whether that element is already
+/// named by the words in question, and the owned form allocated a `String` per
+/// ancestor per text node to be compared against a fixed list and dropped. The
+/// role is either a `&'static str` or the `role` attribute's own text, so
+/// nothing here needs a copy.
+#[cfg(all(feature = "agent-control", unix))]
+pub(crate) fn semantic_role_ref(element: &blitz_dom::ElementData) -> &str {
     if let Some(role) = element_attr(element, "role") {
-        return role.into();
+        return role;
     }
     let tag = element.name.local.as_ref();
     match tag {
@@ -503,12 +515,51 @@ pub(crate) fn semantic_role(element: &blitz_dom::ElementData) -> String {
         "img" => "img",
         "nav" => "navigation",
         "main" => "main",
+        // A named section is a landmark; an unnamed one is nothing.
+        //
+        // HTML-AAM: `<section>` maps to `region` when it has an accessible
+        // name, and to `generic` otherwise. Both halves matter. A named section
+        // is how a page says "this part is the connection settings", and it
+        // arrived indistinguishable from the `<div>`s around it; an unnamed one
+        // is a wrapper, and promoting those would put a landmark around every
+        // block on a page that reaches for `<section>` as a synonym for `<div>`.
+        //
+        // Attributes only, because the name has not been computed yet at this
+        // point and computing it here would walk the section's whole subtree for
+        // every element in the document. That is the same set an accessible name
+        // can come from for a container: `aria-labelledby` is included so an
+        // author who names a section that way still gets the landmark, and
+        // `semantic_name` resolves that reference to the name itself.
+        "section"
+            if ["aria-label", "aria-labelledby", "title"]
+                .iter()
+                .any(|name| {
+                    element_attr(element, name).is_some_and(|value| !value.trim().is_empty())
+                }) =>
+        {
+            "region"
+        }
         "form" => "form",
         "ul" | "ol" => "list",
         "li" => "listitem",
         "table" => "table",
         "tr" => "row",
-        "td" | "th" => "cell",
+        "td" => "cell",
+        // A header cell is not a cell.
+        //
+        // HTML-AAM maps `<th>` to `columnheader` or `rowheader`, and blitz-dom's
+        // own accessibility tree already does exactly this, so the two trees
+        // disagreed about the same document. What a header is for is saying
+        // which column or row the values under it belong to, and a check that
+        // wants "the Version column" has nothing to ask for while every header
+        // is spelled the same as the data beneath it.
+        //
+        // `scope` decides. Without one this is a column header, which is the
+        // common case (a `<thead>` row) and what blitz-dom falls back to.
+        "th" => match element_attr(element, "scope") {
+            Some("row") | Some("rowgroup") => "rowheader",
+            _ => "columnheader",
+        },
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => "heading",
         "input" => match element_attr(element, "type").unwrap_or("text") {
             "checkbox" => "checkbox",
@@ -519,7 +570,6 @@ pub(crate) fn semantic_role(element: &blitz_dom::ElementData) -> String {
         },
         _ => "generic",
     }
-    .into()
 }
 
 /// Where the labels are, so a control can be asked what names it.
@@ -540,12 +590,23 @@ pub(crate) fn semantic_role(element: &blitz_dom::ElementData) -> String {
 /// Built once per snapshot rather than searched per node, because the lookup is
 /// "which label points at me" and answering that from the control costs a scan
 /// of the document each time.
+///
+/// `aria-labelledby` is resolved from here too, for the same reason and against
+/// the same single pass: it points at other elements by `id`, and finding them
+/// from the referring node is a document scan per reference.
 #[cfg(all(feature = "agent-control", unix))]
 pub(crate) struct LabelIndex {
     /// The `for` attribute's value, to that label's text.
     by_control_id: std::collections::HashMap<String, String>,
     /// Labels by node id, so an ancestor walk can recognise one it is inside.
     labels: std::collections::HashMap<blitz_dom::NodeId, String>,
+    /// Every `id` in the document, to the node carrying it.
+    ///
+    /// The node rather than its text, because the text a reference resolves to
+    /// is only ever read for the few elements that carry an `aria-labelledby`.
+    /// Naming every element in the document up front to answer a question almost
+    /// none of them ask would walk each subtree twice per snapshot.
+    by_dom_id: std::collections::HashMap<String, blitz_dom::NodeId>,
 }
 
 #[cfg(all(feature = "agent-control", unix))]
@@ -553,14 +614,26 @@ impl LabelIndex {
     pub(crate) fn build(document: &blitz_dom::BaseDocument) -> Self {
         let mut by_control_id = std::collections::HashMap::new();
         let mut labels = std::collections::HashMap::new();
+        let mut by_dom_id = std::collections::HashMap::new();
         for (id, node) in document.tree().iter() {
             let Some(element) = node.element_data() else {
                 continue;
             };
+            // The first one wins, which is what `getElementById` answers when a
+            // document repeats an `id`. Duplicate ids are invalid markup and a
+            // reference to one is ambiguous by construction, so the rule here is
+            // only about answering the same way twice.
+            if let Some(dom_id) = element_attr(element, "id") {
+                by_dom_id.entry(dom_id.to_owned()).or_insert(id);
+            }
             if element.name.local.as_ref() != "label" {
                 continue;
             }
-            let text = node.text_content();
+            // Read the same way a name is, not with `textContent`. A label is a
+            // name once it reaches a control, so a stylesheet inside it, or the
+            // half of a responsive label that is not rendered at this width,
+            // has to be left out here too.
+            let text = name_text(node, document);
             if let Some(control) = element_attr(element, "for") {
                 by_control_id.insert(control.to_owned(), text.clone());
             }
@@ -569,7 +642,81 @@ impl LabelIndex {
         Self {
             by_control_id,
             labels,
+            by_dom_id,
         }
+    }
+
+    /// The name an element gives itself by pointing at other elements.
+    ///
+    /// # Why this exists
+    ///
+    /// `aria-labelledby` was not followed at all, so an element named that way
+    /// arrived anonymous. Two reports, independently: a QA agent giving a
+    /// dashboard card an identity on ui-starter-app found the region came back
+    /// unnamed and had to fall back to `aria-label`, and the `<section>` rule
+    /// beside this one reads `aria-labelledby` to decide the element is a
+    /// `region`, so such a section got the landmark role and an empty name,
+    /// which is worse than the wrapper it used to be reported as.
+    ///
+    /// # What it computes
+    ///
+    /// The attribute is a space-separated list of ids. Each referenced element's
+    /// rendered text is read in the order the ids are written, and the results
+    /// are joined by a single space.
+    ///
+    /// # Hidden referenced elements
+    ///
+    /// A referenced element contributes its text **even when it is not
+    /// rendered**, which is the opposite of the rule `name_text` applies inside
+    /// a subtree. Both are accname: a node that is hidden and *not* referenced
+    /// returns the empty string, while one directly referenced by
+    /// `aria-labelledby` is exempt from that check. The exemption is the whole
+    /// point of the pattern -- `<span hidden id="units">bytes per second</span>`
+    /// exists to name something without appearing itself -- and a resolver that
+    /// skipped it would name nothing on exactly the markup written to use it.
+    ///
+    /// The exemption is for the element named by the id, not for its subtree:
+    /// `name_text` goes on skipping hidden elements inside it, so the half of a
+    /// responsive label that is not shown stays out of the name. An element
+    /// nested inside a `display: none` referenced element is not hidden by that
+    /// rule, because its own computed display is not `none`, which is the answer
+    /// a browser gives for the same markup.
+    ///
+    /// # Termination
+    ///
+    /// A reference resolves through `name_text`, which reads text, and never
+    /// through `semantic_name`, which would consult `aria-labelledby` again. So
+    /// `<h2 id="h" aria-labelledby="h">Fleet</h2>` is named "Fleet" rather than
+    /// recursing, and no cycle between elements can exist to be guarded against.
+    /// ARIA reaches the same answer by forbidding the second traversal.
+    fn labelled_by(
+        &self,
+        document: &blitz_dom::BaseDocument,
+        element: &blitz_dom::ElementData,
+    ) -> Option<String> {
+        let reference = element_attr(element, "aria-labelledby")?;
+        let mut name = String::new();
+        for token in reference.split_ascii_whitespace() {
+            // An id that matches nothing contributes nothing, rather than
+            // abandoning the whole name. A list of ids is written by hand and
+            // one of them going stale is the common way it breaks; the names
+            // that do still resolve are worth more than an empty string.
+            let Some(node) = self
+                .by_dom_id
+                .get(token)
+                .and_then(|id| document.get_node(*id))
+            else {
+                continue;
+            };
+            if !name.is_empty() {
+                name.push(' ');
+            }
+            name.push_str(&name_text(node, document));
+        }
+        // Nothing resolved, or everything that did was blank. That is the
+        // absence of a name rather than a name, and returning it would make
+        // every rule below this one unreachable for the element.
+        (!name.trim().is_empty()).then_some(name)
     }
 
     /// The label text for a control, by association or by containment.
@@ -669,6 +816,20 @@ fn name_text(node: &blitz_dom::Node, document: &blitz_dom::BaseDocument) -> Stri
             let Some(child) = document.get_node(*child) else {
                 continue;
             };
+            // What is not rendered is not part of the name.
+            //
+            // A responsive control writes both labels and shows one:
+            // `sm:hidden` on the short one, `hidden sm:inline` on the long one.
+            // Folding both together produced "Book Book a diagnostic", a name
+            // no viewer at any width can see and no check can be written
+            // against. `visibility: hidden` and `aria-hidden` are excluded for
+            // the same reason, which is the rule accname states directly.
+            //
+            // Elements only. A text node carries no display of its own, so it
+            // is present exactly when the element holding it is.
+            if child.element_data().is_some() && !node_is_individually_visible(child) {
+                continue;
+            }
             // A boundary either side, so a block between two others is
             // separated from both. `normalize_name` collapses the runs.
             let separate = !is_inline(child);
@@ -686,6 +847,65 @@ fn name_text(node: &blitz_dom::Node, document: &blitz_dom::BaseDocument) -> Stri
     out
 }
 
+/// Whether a role takes its accessible name from its own subtree when the
+/// author wrote no explicit one.
+///
+/// ARIA's *nameFrom: author, contents*, and nothing else. The list is closed on
+/// purpose: a role that is not on it is named only by what the author declared,
+/// because a container's text content is its whole subtree and naming those
+/// would give every wrapper on a page a name made of the page.
+///
+/// `alert` and `status` are here because they are the roles an application uses
+/// to say something happened -- a refusal, a saved confirmation -- and what they
+/// say is their content. Without them a live region arrives anonymous, so "the
+/// reason is shown" is not a question a suite can ask, and every validation
+/// outcome has to be approximated by something else that moved.
+///
+/// `menuitem`, `tab` and `treeitem` are the menu, tab and tree equivalents of
+/// `option`. Leaving them out made every dropdown item in the fleet anonymous:
+/// a `<button role="menuitem">Platform Admin</button>` came back with an empty
+/// name, so nothing was announced and no check could name the option it meant
+/// to press.
+///
+/// The table roles are here because ARIA gives all five of them
+/// *nameFrom: contents*, and their absence is why whole tables of crate names,
+/// versions and column types were unreadable: the cells were in the tree and
+/// every one of them was anonymous, which reads from outside as a table that is
+/// not in the tree at all. A row's name being the run of its cells is not an
+/// accident of that rule, it is the rule: it is what a screen reader announces
+/// when the caret enters the row.
+///
+/// `semantic_role` returns a `role` attribute verbatim, so an author who writes
+/// one of these opts into the naming this list provides.
+#[cfg(all(feature = "agent-control", unix))]
+pub(crate) fn names_from_contents(role: &str) -> bool {
+    matches!(
+        role,
+        "button"
+            | "link"
+            | "heading"
+            | "option"
+            | "alert"
+            | "status"
+            // The same class as `alert` and `status`: a tooltip exists to say
+            // one thing, and what it says is its content. Anonymous, it is a
+            // node reporting that some explanation is on screen without
+            // reporting the explanation.
+            | "tooltip"
+            | "menuitem"
+            | "menuitemcheckbox"
+            | "menuitemradio"
+            | "tab"
+            | "treeitem"
+            | "cell"
+            | "gridcell"
+            | "columnheader"
+            | "rowheader"
+            | "row"
+    )
+}
+
+#[cfg(all(feature = "agent-control", unix))]
 pub(crate) fn semantic_name(
     element: &blitz_dom::ElementData,
     node: &blitz_dom::Node,
@@ -694,8 +914,17 @@ pub(crate) fn semantic_name(
     id: blitz_dom::NodeId,
     labels: &LabelIndex,
 ) -> String {
-    let name = element_attr(element, "aria-label")
-        .map(std::borrow::Cow::Borrowed)
+    // The elements an author pointed at, which outrank everything below.
+    //
+    // ARIA's order: `aria-labelledby` first, then `aria-label`, then the host
+    // language's own labelling, then contents. It is first because it is the
+    // most deliberate thing an author can write. Naming one element by the
+    // visible text of another says the two belong together, and it is the only
+    // rule here that can name something from outside itself.
+    let name = labels
+        .labelled_by(document, element)
+        .map(std::borrow::Cow::Owned)
+        .or_else(|| element_attr(element, "aria-label").map(std::borrow::Cow::Borrowed))
         // The label a form control was given. After `aria-label`, which is the
         // author overriding the visible text on purpose, and before `title`,
         // which is a tooltip rather than a name.
@@ -706,47 +935,34 @@ pub(crate) fn semantic_name(
         })
         .or_else(|| element_attr(element, "alt").map(std::borrow::Cow::Borrowed))
         .or_else(|| element_attr(element, "title").map(std::borrow::Cow::Borrowed))
+        // An option's `label`, which HTML gives precedence over the option's
+        // own text: `<option label="Sixty four bits">u64</option>` announces the
+        // label.
+        .or_else(|| {
+            (role == "option")
+                .then(|| element_attr(element, "label"))
+                .flatten()
+                .map(std::borrow::Cow::Borrowed)
+        })
         // Named by their own content.
         //
-        // `alert` and `status` are here because they are the roles an
-        // application uses to say something happened -- a refusal, a saved
-        // confirmation -- and what they say is their content. Without them a
-        // live region arrives anonymous, so "the reason is shown" is not a
-        // question that can be asked, and every validation outcome in a suite
-        // has to be approximated by something else that moved.
-        //
-        // Deliberately not `generic`. A wrapper's text content is its entire
-        // subtree, so naming those would give every container on the page a
-        // name made of the whole page.
+        // Empty contents are not a name, and stopping here on an empty string
+        // is how the fallbacks below became unreachable for the roles on this
+        // list.
         .or_else(|| {
-            matches!(
-                role,
-                "button"
-                    | "link"
-                    | "heading"
-                    | "option"
-                    | "alert"
-                    | "status"
-                    // The menu, tab and tree equivalents of `option`. ARIA names all
-                    // of these from their own content, and leaving them out
-                    // made every dropdown item in the fleet anonymous: a
-                    // `<button role="menuitem">Platform Admin</button>` came
-                    // back with an empty name, so a screen reader announced
-                    // nothing and no check could name the option it meant to
-                    // press. `semantic_role` returns the `role` attribute
-                    // verbatim, so an author who writes one of these opts out
-                    // of the native naming this list is meant to provide.
-                    //
-                    // Still deliberately absent: `cell` and `row`. Their
-                    // content is a whole subtree, which is the same objection
-                    // the comment above raises against `generic`.
-                    | "menuitem"
-                    | "menuitemcheckbox"
-                    | "menuitemradio"
-                    | "tab"
-                    | "treeitem"
-            )
-            .then(|| std::borrow::Cow::Owned(name_text(node, document)))
+            names_from_contents(role)
+                .then(|| name_text(node, document))
+                .filter(|text| !text.trim().is_empty())
+                .map(std::borrow::Cow::Owned)
+        })
+        // What is left of an option that carries no text at all: a
+        // `<datalist>` entry is written `<option value="u64">`, and its value is
+        // what a browser announces and what a person sees in the list.
+        .or_else(|| {
+            (role == "option")
+                .then(|| element_attr(element, "value"))
+                .flatten()
+                .map(std::borrow::Cow::Borrowed)
         })
         // A placeholder is the last resort a browser falls back to, and it is
         // the only thing naming a great many search and filter fields. Last, so
@@ -757,9 +973,21 @@ pub(crate) fn semantic_name(
                 .flatten()
         })
         .unwrap_or_default();
-    let mut normalized = String::with_capacity(name.len().min(512));
+    normalize_text(&name)
+}
+
+/// One space between words, and 512 characters at most.
+///
+/// A name crosses a socket and is matched against by a check, so the runs of
+/// newlines and indentation that markup puts between two words are noise in
+/// both places. The cap is on the value that leaves here rather than on the
+/// text that arrives, so a name made of a long subtree still starts with the
+/// words a person would read first.
+#[cfg(all(feature = "agent-control", unix))]
+pub(crate) fn normalize_text(text: &str) -> String {
+    let mut normalized = String::with_capacity(text.len().min(512));
     let mut characters = 0;
-    for word in name.split_whitespace() {
+    for word in text.split_whitespace() {
         if !normalized.is_empty() && characters < 512 {
             normalized.push(' ');
             characters += 1;
@@ -773,6 +1001,70 @@ pub(crate) fn semantic_name(
         }
     }
     normalized
+}
+
+/// The text a node contributes to the tree in its own right, if any.
+///
+/// # Why text is in this tree at all
+///
+/// Everything that is not an element was dropped, so text that is not some
+/// element's accessible name could not be read at all: a paragraph, a `<pre>`,
+/// a code block, the prose of a documentation page. A check could assert that a
+/// button exists and not that the page says what the button does.
+///
+/// It is not only a check limitation. A browser exposes those text runs, and so
+/// does blitz-dom, whose own accessibility tree gives every text node
+/// `Role::TextRun` with its content. This tree disagreed with both.
+///
+/// # Why not every text node
+///
+/// Text under a role that is named by its contents is already in the tree, as
+/// that node's name, and that node is the one a harness can act on. Reporting
+/// it twice would make "the page says this once" false and hand a check a node
+/// it cannot click for text it can already read. It is the rule the ARIA
+/// snapshot formats apply as well: a button carries its label, and no separate
+/// text line appears under it.
+///
+/// `<style>`, `<script>` and friends are excluded for the reason `name_text`
+/// excludes them: their content is not rendered, and reading it out returns a
+/// stylesheet.
+#[cfg(all(feature = "agent-control", unix))]
+pub(crate) fn exposed_text(
+    document: &blitz_dom::BaseDocument,
+    id: blitz_dom::NodeId,
+    node: &blitz_dom::Node,
+) -> Option<String> {
+    let blitz_dom::node::NodeData::Text(text) = &node.data else {
+        return None;
+    };
+    let normalized = normalize_text(&text.content);
+    if normalized.is_empty() {
+        return None;
+    }
+    // Every element above it, not only the nearest one: the text of
+    // `<button><span>Save</span></button>` is the button's name however many
+    // wrappers sit between the two, and the span it is written in does not make
+    // it a second appearance of the same words.
+    let mut current = document.get_node(id)?.parent;
+    for _ in 0..64 {
+        let Some(ancestor) = current else {
+            break;
+        };
+        let ancestor_node = document.get_node(ancestor)?;
+        if let Some(element) = ancestor_node.element_data() {
+            if matches!(
+                element.name.local.as_ref(),
+                "style" | "script" | "template" | "noscript" | "title"
+            ) {
+                return None;
+            }
+            if names_from_contents(semantic_role_ref(element)) {
+                return None;
+            }
+        }
+        current = ancestor_node.parent;
+    }
+    Some(normalized)
 }
 
 #[cfg(all(feature = "agent-control", unix))]
@@ -1083,11 +1375,36 @@ pub fn inspect_document(
         .filter_map(|candidate| {
             let id = candidate.id;
             let node = inner.get_node(id)?;
-            let element = node.element_data()?;
             if layout_validity.get(&id) != Some(&true) {
                 return None;
             }
             let rect = inner.get_client_bounding_rect(id);
+            let bounds = rect.and_then(|rect| {
+                let bounds = [rect.x, rect.y, rect.width, rect.height];
+                bounds
+                    .iter()
+                    .all(|value| value.is_finite())
+                    .then_some(bounds)
+            });
+            let Some(element) = node.element_data() else {
+                // Text the page shows in its own right. A text run has no
+                // attributes, no state and nothing to press, so every field
+                // below the name describes the box it is drawn in.
+                let text = exposed_text(&inner, id, node)?;
+                return Some(SemanticNode {
+                    dom_id: None,
+                    id: id.as_u64(),
+                    parent: candidate.parent.map(|id| id.as_u64()),
+                    role: "text".to_owned(),
+                    name: text,
+                    value: None,
+                    enabled: true,
+                    visible: candidate.visible,
+                    selected: false,
+                    bounds,
+                    slot: None,
+                });
+            };
             let visible = candidate.visible
                 && rect
                     .as_ref()
@@ -1106,13 +1423,7 @@ pub fn inspect_document(
                     && element_attr(element, "aria-disabled") != Some("true"),
                 visible,
                 selected: semantic_selected(element),
-                bounds: rect.and_then(|rect| {
-                    let bounds = [rect.x, rect.y, rect.width, rect.height];
-                    bounds
-                        .iter()
-                        .all(|value| value.is_finite())
-                        .then_some(bounds)
-                }),
+                bounds,
                 slot: element_attr(element, "data-slot").map(str::to_owned),
             })
         })
@@ -1414,7 +1725,7 @@ pub(crate) fn semantic_subtree_ids(
         let Some(node) = document.get_node(node_id) else {
             continue;
         };
-        if node.element_data().is_some() {
+        if node.element_data().is_some() || node.is_text_node() {
             out.push(node_id);
         }
         for &child_id in node.children.iter().rev() {
@@ -1584,7 +1895,10 @@ pub(crate) fn attached_semantic_candidates(
         if is_element && max_depth != 0 && depth > max_depth {
             continue;
         }
-        if is_element {
+        // Elements, and the text a page shows in its own right. `exposed_text`
+        // decides which text nodes survive; offering them all here keeps that
+        // one rule in one place, and the walk already visits them.
+        if is_element || node.is_text_node() {
             candidates.push(SemanticCandidate {
                 id,
                 parent: semantic_parent,
@@ -1850,6 +2164,379 @@ mod tests {
         assert!(
             error.message.contains("not visible"),
             "unexpected error: {error:?}"
+        );
+    }
+}
+
+/// What the semantic tree says about one small document.
+///
+/// Every test here reads the tree through `inspect_document`, which is the
+/// entry point a headless QA host calls, rather than through the naming
+/// helpers directly. A role or a name that is right inside the crate and wrong
+/// by the time it reaches the socket is the defect these were written for.
+#[cfg(all(test, feature = "agent-control", unix))]
+mod semantic_tests {
+    use super::*;
+    use blitz_dom::DocumentConfig;
+
+    /// One document, reproducing every naming and role defect this module
+    /// covers. Kept whole rather than split per test so a fix that repairs one
+    /// case by breaking another is caught by the next assertion down.
+    const REPRO: &str = r#"<table aria-label="named table">
+  <thead><tr><th scope="col">Crate</th></tr></thead>
+  <tbody><tr><td>worktable</td></tr></tbody>
+</table>
+<section aria-label="a named section"><p>text</p></section>
+<datalist id="t"><option value="u64"></option></datalist>
+<pre>plain text in a pre</pre>
+<div role="tooltip">tooltip text</div>"#;
+
+    fn tree(html: &str) -> Vec<SemanticNode> {
+        let mut document = ScriptDocument::from_html(html, DocumentConfig::default());
+        document.inner_mut().resolve(0.0);
+        match inspect_document(&mut document, None, 0, 1) {
+            DebugResponse::AgentSnapshot(snapshot) => snapshot.nodes,
+            other => panic!("inspection did not answer with a tree: {other:?}"),
+        }
+    }
+
+    fn roles<'a>(nodes: &'a [SemanticNode], role: &str) -> Vec<&'a SemanticNode> {
+        nodes.iter().filter(|node| node.role == role).collect()
+    }
+
+    fn names(nodes: &[SemanticNode], role: &str) -> Vec<String> {
+        roles(nodes, role)
+            .into_iter()
+            .map(|node| node.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_header_cell_is_a_header() {
+        let nodes = tree(REPRO);
+        assert_eq!(
+            roles(&nodes, "columnheader").len(),
+            1,
+            "a `<th scope=\"col\">` is a column header, not an ordinary cell"
+        );
+        assert_eq!(roles(&nodes, "cell").len(), 1, "only the `<td>` is a cell");
+    }
+
+    #[test]
+    fn a_cell_is_named_by_what_it_holds() {
+        let nodes = tree(REPRO);
+        assert_eq!(
+            names(&nodes, "cell"),
+            vec!["worktable".to_string()],
+            "a data cell's text is its accessible name, so a table of values is readable"
+        );
+        assert_eq!(
+            names(&nodes, "columnheader"),
+            vec!["Crate".to_string()],
+            "a header cell is named by its content too"
+        );
+    }
+
+    #[test]
+    fn a_row_is_named_by_its_cells() {
+        let nodes = tree(REPRO);
+        assert_eq!(
+            names(&nodes, "row"),
+            vec!["Crate".to_string(), "worktable".to_string()],
+            "a row is named from its contents, which is what makes a table row addressable"
+        );
+    }
+
+    #[test]
+    fn a_row_scoped_header_is_a_row_header() {
+        let nodes = tree(r#"<table><tr><th scope="row">Crate</th><td>worktable</td></tr></table>"#);
+        assert_eq!(
+            roles(&nodes, "rowheader").len(),
+            1,
+            "`scope=\"row\"` makes a header describe its row, which is what blitz-dom reports"
+        );
+    }
+
+    #[test]
+    fn a_named_section_is_a_region() {
+        let nodes = tree(REPRO);
+        assert_eq!(
+            names(&nodes, "region"),
+            vec!["a named section".to_string()],
+            "a `<section>` with an accessible name is a landmark, not a wrapper"
+        );
+    }
+
+    #[test]
+    fn text_the_page_shows_is_in_the_tree() {
+        let nodes = tree(REPRO);
+        assert!(
+            names(&nodes, "text").contains(&"plain text in a pre".to_string()),
+            "a `<pre>`'s text is not any element's name, so without a text node it is unreadable: \
+             {:?}",
+            names(&nodes, "text")
+        );
+    }
+
+    #[test]
+    fn a_text_run_refuses_a_click_rather_than_panicking() {
+        // Text runs are new ids in a tree a harness drives by id, so the
+        // failure mode when one is pressed has to be a typed refusal and not a
+        // crash inside the control server.
+        let mut document =
+            ScriptDocument::from_html("<pre>plain text in a pre</pre>", DocumentConfig::default());
+        document.inner_mut().resolve(0.0);
+        let DebugResponse::AgentSnapshot(snapshot) = inspect_document(&mut document, None, 0, 1)
+        else {
+            panic!("inspection did not answer with a tree");
+        };
+        let text = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.role == "text")
+            .expect("the pre's text is in the tree");
+        let error = activate_agent_node(&mut document, text.id, 1)
+            .expect_err("a text run has no box to press");
+        assert_eq!(error.code, "notInteractable", "unexpected error: {error:?}");
+    }
+
+    #[test]
+    fn text_that_already_names_a_node_is_not_repeated() {
+        let nodes = tree(REPRO);
+        let text = names(&nodes, "text");
+        assert!(
+            !text.contains(&"worktable".to_string()),
+            "the cell carries this text as its name, and the cell is the node a harness can act \
+             on: {text:?}"
+        );
+        let nodes = tree(r#"<button><span>Save</span></button>"#);
+        assert!(
+            names(&nodes, "text").is_empty(),
+            "a wrapper between a control and its text does not make the text a second node"
+        );
+    }
+
+    #[test]
+    fn a_stylesheet_is_not_text() {
+        let nodes = tree("<style>.a { color: red }</style><p>shown</p>");
+        assert_eq!(
+            names(&nodes, "text"),
+            vec!["shown".to_string()],
+            "a `<style>` is not rendered, and reading it out returns a stylesheet"
+        );
+    }
+
+    /// Both halves of a responsive label, the way Tailwind writes one.
+    ///
+    /// `sm:hidden` on the short one and `hidden sm:inline` on the long one is a
+    /// single control that says "Book" on a phone and "Book a diagnostic" on a
+    /// laptop. Exactly one of them is rendered at any width, and folding both
+    /// into the name produced "Book Book a diagnostic", which matches nothing a
+    /// person can see and nothing a check can be written against.
+    const RESPONSIVE_LABEL: &str = r#"<button>
+         <span>Book</span>
+         <span style="display: none">Book a diagnostic</span>
+       </button>"#;
+
+    #[test]
+    fn a_name_skips_a_subtree_that_is_not_rendered() {
+        let nodes = tree(RESPONSIVE_LABEL);
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Book".to_string()],
+            "a display:none subtree contributes nothing to a name"
+        );
+    }
+
+    #[test]
+    fn a_name_skips_a_subtree_that_is_hidden_or_aria_hidden() {
+        let nodes = tree(
+            r#"<button>Save<span style="visibility: hidden">draft</span><span aria-hidden="true">now</span></button>"#,
+        );
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Save".to_string()],
+            "an invisible box and an aria-hidden one are both outside the name"
+        );
+    }
+
+    #[test]
+    fn a_label_skips_what_it_does_not_show() {
+        let nodes = tree(
+            r#"<label for="url">Endpoint<span style="display: none"> (advanced)</span></label>
+               <input id="url" type="text">"#,
+        );
+        assert_eq!(
+            names(&nodes, "textbox"),
+            vec!["Endpoint".to_string()],
+            "the label a control is named by is read the same way a name is"
+        );
+    }
+
+    #[test]
+    fn a_value_only_option_is_named_by_its_value() {
+        let nodes = tree(REPRO);
+        assert_eq!(
+            names(&nodes, "option"),
+            vec!["u64".to_string()],
+            "a `<datalist>` option carries its text in `value`, which is what a browser announces"
+        );
+    }
+
+    #[test]
+    fn an_options_label_attribute_wins_over_its_text() {
+        let nodes = tree(r#"<select><option label="Sixty four bits">u64</option></select>"#);
+        assert_eq!(
+            names(&nodes, "option"),
+            vec!["Sixty four bits".to_string()],
+            "HTML gives `label` precedence over an option's own text"
+        );
+    }
+
+    #[test]
+    fn a_tooltip_says_what_it_says() {
+        let nodes = tree(REPRO);
+        assert_eq!(
+            names(&nodes, "tooltip"),
+            vec!["tooltip text".to_string()],
+            "a tooltip is named by its contents, and its contents are the whole point of it"
+        );
+    }
+
+    #[test]
+    fn an_unnamed_section_is_not_a_region() {
+        let nodes = tree("<section><p>text</p></section>");
+        assert!(
+            roles(&nodes, "region").is_empty(),
+            "HTML-AAM gives an unnamed section no landmark role, so a page of \
+             plain sections does not grow a landmark per wrapper"
+        );
+    }
+
+    /// The shape both reports arrived as: a heading names the region under it.
+    ///
+    /// A card with a title above its body is how a dashboard is written, and
+    /// `aria-labelledby` pointing at that title is the markup for saying so
+    /// without repeating the words in an attribute.
+    #[test]
+    fn a_region_is_named_by_the_heading_it_points_at() {
+        let nodes = tree(
+            r#"<h2 id="title">Fleet health</h2>
+               <section aria-labelledby="title"><p>text</p></section>"#,
+        );
+        assert_eq!(
+            names(&nodes, "region"),
+            vec!["Fleet health".to_string()],
+            "a section named by reference is a named landmark, not an anonymous one"
+        );
+    }
+
+    #[test]
+    fn a_list_of_references_is_joined_in_the_order_it_is_written() {
+        let nodes = tree(
+            r#"<span id="unit">per second</span><span id="what">Requests</span>
+               <button aria-labelledby="what unit">?</button>"#,
+        );
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Requests per second".to_string()],
+            "the ids are read in the order the author listed them, not in document order, \
+             and their text is joined by a single space"
+        );
+    }
+
+    #[test]
+    fn a_reference_outranks_an_aria_label_and_the_contents() {
+        let nodes = tree(
+            r#"<span id="title">Fleet health</span>
+               <button aria-labelledby="title" aria-label="overridden">Save</button>"#,
+        );
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Fleet health".to_string()],
+            "ARIA ranks `aria-labelledby` above `aria-label`, which is above name from contents"
+        );
+    }
+
+    /// ARIA exempts a directly referenced element from the hidden check, which
+    /// is the opposite of the rule applied inside a name's own subtree. It has
+    /// to be, or the pattern the exemption exists for names nothing: an element
+    /// written only to be pointed at is routinely not shown.
+    #[test]
+    fn a_referenced_element_names_even_when_it_is_not_rendered() {
+        let nodes = tree(
+            r#"<span id="title" style="display: none">Fleet <b>health</b></span>
+               <section aria-labelledby="title"><p>text</p></section>"#,
+        );
+        assert_eq!(
+            names(&nodes, "region"),
+            vec!["Fleet health".to_string()],
+            "a referenced element contributes its whole text even when it is hidden"
+        );
+    }
+
+    /// The other half of that rule, so the exemption stays as narrow as ARIA
+    /// makes it: the element named by the id is exempt, its subtree is not.
+    #[test]
+    fn a_reference_still_skips_what_is_hidden_inside_it() {
+        let nodes = tree(
+            r#"<span id="title">Book<span style="display: none"> a diagnostic</span></span>
+               <button aria-labelledby="title">?</button>"#,
+        );
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Book".to_string()],
+            "the hidden half of a responsive label stays out of a name reached by reference too"
+        );
+    }
+
+    #[test]
+    fn a_reference_to_nothing_falls_through_to_the_next_rule() {
+        let nodes = tree(r#"<button aria-labelledby="deleted" aria-label="Save">?</button>"#);
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Save".to_string()],
+            "an id that matches no element is not a name, so the rules below it stay reachable"
+        );
+        let nodes = tree(r#"<button aria-labelledby="deleted">Save</button>"#);
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Save".to_string()],
+            "with nothing else declared the control is still named by its own contents"
+        );
+    }
+
+    #[test]
+    fn a_reference_that_resolves_to_no_text_falls_through_too() {
+        let nodes = tree(
+            r#"<span id="title"></span>
+               <button aria-labelledby="title">Save</button>"#,
+        );
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Save".to_string()],
+            "an element that exists and says nothing gives no name, which is not the same as \
+             giving an empty one"
+        );
+    }
+
+    /// A self-reference resolves to the element's own text and terminates.
+    ///
+    /// The `aria-label` is what makes this an assertion rather than a tautology.
+    /// A resolver that followed a reference by computing the referenced
+    /// element's *name* would either not terminate here or, with a cycle guard,
+    /// abandon the reference and answer "overridden". Reading the reference as
+    /// text is what gives the heading's own words, and it is why no cycle guard
+    /// is needed anywhere in this path.
+    #[test]
+    fn an_element_that_references_itself_is_named_by_its_own_contents() {
+        let nodes = tree(
+            r#"<h2 id="self" aria-labelledby="self" aria-label="overridden">Fleet health</h2>"#,
+        );
+        assert_eq!(
+            names(&nodes, "heading"),
+            vec!["Fleet health".to_string()],
+            "a reference is read as text and never as another name computation"
         );
     }
 }
