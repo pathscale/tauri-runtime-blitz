@@ -860,9 +860,21 @@ pub(crate) fn semantic_name(
                 .flatten()
         })
         .unwrap_or_default();
-    let mut normalized = String::with_capacity(name.len().min(512));
+    normalize_text(&name)
+}
+
+/// One space between words, and 512 characters at most.
+///
+/// A name crosses a socket and is matched against by a check, so the runs of
+/// newlines and indentation that markup puts between two words are noise in
+/// both places. The cap is on the value that leaves here rather than on the
+/// text that arrives, so a name made of a long subtree still starts with the
+/// words a person would read first.
+#[cfg(all(feature = "agent-control", unix))]
+pub(crate) fn normalize_text(text: &str) -> String {
+    let mut normalized = String::with_capacity(text.len().min(512));
     let mut characters = 0;
-    for word in name.split_whitespace() {
+    for word in text.split_whitespace() {
         if !normalized.is_empty() && characters < 512 {
             normalized.push(' ');
             characters += 1;
@@ -876,6 +888,70 @@ pub(crate) fn semantic_name(
         }
     }
     normalized
+}
+
+/// The text a node contributes to the tree in its own right, if any.
+///
+/// # Why text is in this tree at all
+///
+/// Everything that is not an element was dropped, so text that is not some
+/// element's accessible name could not be read at all: a paragraph, a `<pre>`,
+/// a code block, the prose of a documentation page. A check could assert that a
+/// button exists and not that the page says what the button does.
+///
+/// It is not only a check limitation. A browser exposes those text runs, and so
+/// does blitz-dom, whose own accessibility tree gives every text node
+/// `Role::TextRun` with its content. This tree disagreed with both.
+///
+/// # Why not every text node
+///
+/// Text under a role that is named by its contents is already in the tree, as
+/// that node's name, and that node is the one a harness can act on. Reporting
+/// it twice would make "the page says this once" false and hand a check a node
+/// it cannot click for text it can already read. It is the rule the ARIA
+/// snapshot formats apply as well: a button carries its label, and no separate
+/// text line appears under it.
+///
+/// `<style>`, `<script>` and friends are excluded for the reason `name_text`
+/// excludes them: their content is not rendered, and reading it out returns a
+/// stylesheet.
+#[cfg(all(feature = "agent-control", unix))]
+pub(crate) fn exposed_text(
+    document: &blitz_dom::BaseDocument,
+    id: blitz_dom::NodeId,
+    node: &blitz_dom::Node,
+) -> Option<String> {
+    let blitz_dom::node::NodeData::Text(text) = &node.data else {
+        return None;
+    };
+    let normalized = normalize_text(&text.content);
+    if normalized.is_empty() {
+        return None;
+    }
+    // Every element above it, not only the nearest one: the text of
+    // `<button><span>Save</span></button>` is the button's name however many
+    // wrappers sit between the two, and the span it is written in does not make
+    // it a second appearance of the same words.
+    let mut current = document.get_node(id)?.parent;
+    for _ in 0..64 {
+        let Some(ancestor) = current else {
+            break;
+        };
+        let ancestor_node = document.get_node(ancestor)?;
+        if let Some(element) = ancestor_node.element_data() {
+            if matches!(
+                element.name.local.as_ref(),
+                "style" | "script" | "template" | "noscript" | "title"
+            ) {
+                return None;
+            }
+            if names_from_contents(&semantic_role(element)) {
+                return None;
+            }
+        }
+        current = ancestor_node.parent;
+    }
+    Some(normalized)
 }
 
 #[cfg(all(feature = "agent-control", unix))]
@@ -1186,11 +1262,36 @@ pub fn inspect_document(
         .filter_map(|candidate| {
             let id = candidate.id;
             let node = inner.get_node(id)?;
-            let element = node.element_data()?;
             if layout_validity.get(&id) != Some(&true) {
                 return None;
             }
             let rect = inner.get_client_bounding_rect(id);
+            let bounds = rect.and_then(|rect| {
+                let bounds = [rect.x, rect.y, rect.width, rect.height];
+                bounds
+                    .iter()
+                    .all(|value| value.is_finite())
+                    .then_some(bounds)
+            });
+            let Some(element) = node.element_data() else {
+                // Text the page shows in its own right. A text run has no
+                // attributes, no state and nothing to press, so every field
+                // below the name describes the box it is drawn in.
+                let text = exposed_text(&inner, id, node)?;
+                return Some(SemanticNode {
+                    dom_id: None,
+                    id: id.as_u64(),
+                    parent: candidate.parent.map(|id| id.as_u64()),
+                    role: "text".to_owned(),
+                    name: text,
+                    value: None,
+                    enabled: true,
+                    visible: candidate.visible,
+                    selected: false,
+                    bounds,
+                    slot: None,
+                });
+            };
             let visible = candidate.visible
                 && rect
                     .as_ref()
@@ -1209,13 +1310,7 @@ pub fn inspect_document(
                     && element_attr(element, "aria-disabled") != Some("true"),
                 visible,
                 selected: semantic_selected(element),
-                bounds: rect.and_then(|rect| {
-                    let bounds = [rect.x, rect.y, rect.width, rect.height];
-                    bounds
-                        .iter()
-                        .all(|value| value.is_finite())
-                        .then_some(bounds)
-                }),
+                bounds,
                 slot: element_attr(element, "data-slot").map(str::to_owned),
             })
         })
@@ -1517,7 +1612,7 @@ pub(crate) fn semantic_subtree_ids(
         let Some(node) = document.get_node(node_id) else {
             continue;
         };
-        if node.element_data().is_some() {
+        if node.element_data().is_some() || node.is_text_node() {
             out.push(node_id);
         }
         for &child_id in node.children.iter().rev() {
@@ -1687,7 +1782,10 @@ pub(crate) fn attached_semantic_candidates(
         if is_element && max_depth != 0 && depth > max_depth {
             continue;
         }
-        if is_element {
+        // Elements, and the text a page shows in its own right. `exposed_text`
+        // decides which text nodes survive; offering them all here keeps that
+        // one rule in one place, and the walk already visits them.
+        if is_element || node.is_text_node() {
             candidates.push(SemanticCandidate {
                 id,
                 parent: semantic_parent,
@@ -2053,6 +2151,43 @@ mod semantic_tests {
             names(&nodes, "region"),
             vec!["a named section".to_string()],
             "a `<section>` with an accessible name is a landmark, not a wrapper"
+        );
+    }
+
+    #[test]
+    fn text_the_page_shows_is_in_the_tree() {
+        let nodes = tree(REPRO);
+        assert!(
+            names(&nodes, "text").contains(&"plain text in a pre".to_string()),
+            "a `<pre>`'s text is not any element's name, so without a text node it is unreadable: \
+             {:?}",
+            names(&nodes, "text")
+        );
+    }
+
+    #[test]
+    fn text_that_already_names_a_node_is_not_repeated() {
+        let nodes = tree(REPRO);
+        let text = names(&nodes, "text");
+        assert!(
+            !text.contains(&"worktable".to_string()),
+            "the cell carries this text as its name, and the cell is the node a harness can act \
+             on: {text:?}"
+        );
+        let nodes = tree(r#"<button><span>Save</span></button>"#);
+        assert!(
+            names(&nodes, "text").is_empty(),
+            "a wrapper between a control and its text does not make the text a second node"
+        );
+    }
+
+    #[test]
+    fn a_stylesheet_is_not_text() {
+        let nodes = tree("<style>.a { color: red }</style><p>shown</p>");
+        assert_eq!(
+            names(&nodes, "text"),
+            vec!["shown".to_string()],
+            "a `<style>` is not rendered, and reading it out returns a stylesheet"
         );
     }
 
