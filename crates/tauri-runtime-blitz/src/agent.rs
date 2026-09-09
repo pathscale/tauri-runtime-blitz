@@ -599,7 +599,11 @@ impl LabelIndex {
             if element.name.local.as_ref() != "label" {
                 continue;
             }
-            let text = node.text_content();
+            // Read the same way a name is, not with `textContent`. A label is a
+            // name once it reaches a control, so a stylesheet inside it, or the
+            // half of a responsive label that is not rendered at this width,
+            // has to be left out here too.
+            let text = name_text(node, document);
             if let Some(control) = element_attr(element, "for") {
                 by_control_id.insert(control.to_owned(), text.clone());
             }
@@ -708,6 +712,20 @@ fn name_text(node: &blitz_dom::Node, document: &blitz_dom::BaseDocument) -> Stri
             let Some(child) = document.get_node(*child) else {
                 continue;
             };
+            // What is not rendered is not part of the name.
+            //
+            // A responsive control writes both labels and shows one:
+            // `sm:hidden` on the short one, `hidden sm:inline` on the long one.
+            // Folding both together produced "Book Book a diagnostic", a name
+            // no viewer at any width can see and no check can be written
+            // against. `visibility: hidden` and `aria-hidden` are excluded for
+            // the same reason, which is the rule accname states directly.
+            //
+            // Elements only. A text node carries no display of its own, so it
+            // is present exactly when the element holding it is.
+            if child.element_data().is_some() && !node_is_individually_visible(child) {
+                continue;
+            }
             // A boundary either side, so a block between two others is
             // separated from both. `normalize_name` collapses the runs.
             let separate = !is_inline(child);
@@ -2035,6 +2053,53 @@ mod semantic_tests {
             names(&nodes, "region"),
             vec!["a named section".to_string()],
             "a `<section>` with an accessible name is a landmark, not a wrapper"
+        );
+    }
+
+    /// Both halves of a responsive label, the way Tailwind writes one.
+    ///
+    /// `sm:hidden` on the short one and `hidden sm:inline` on the long one is a
+    /// single control that says "Book" on a phone and "Book a diagnostic" on a
+    /// laptop. Exactly one of them is rendered at any width, and folding both
+    /// into the name produced "Book Book a diagnostic", which matches nothing a
+    /// person can see and nothing a check can be written against.
+    const RESPONSIVE_LABEL: &str = r#"<button>
+         <span>Book</span>
+         <span style="display: none">Book a diagnostic</span>
+       </button>"#;
+
+    #[test]
+    fn a_name_skips_a_subtree_that_is_not_rendered() {
+        let nodes = tree(RESPONSIVE_LABEL);
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Book".to_string()],
+            "a display:none subtree contributes nothing to a name"
+        );
+    }
+
+    #[test]
+    fn a_name_skips_a_subtree_that_is_hidden_or_aria_hidden() {
+        let nodes = tree(
+            r#"<button>Save<span style="visibility: hidden">draft</span><span aria-hidden="true">now</span></button>"#,
+        );
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Save".to_string()],
+            "an invisible box and an aria-hidden one are both outside the name"
+        );
+    }
+
+    #[test]
+    fn a_label_skips_what_it_does_not_show() {
+        let nodes = tree(
+            r#"<label for="url">Endpoint<span style="display: none"> (advanced)</span></label>
+               <input id="url" type="text">"#,
+        );
+        assert_eq!(
+            names(&nodes, "textbox"),
+            vec!["Endpoint".to_string()],
+            "the label a control is named by is read the same way a name is"
         );
     }
 
