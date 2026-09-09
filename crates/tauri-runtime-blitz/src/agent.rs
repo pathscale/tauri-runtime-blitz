@@ -584,15 +584,26 @@ impl LabelIndex {
     ) -> Option<String> {
         if let Some(dom_id) = element_attr(element, "id")
             && let Some(text) = self.by_control_id.get(dom_id)
+            && !text.trim().is_empty()
         {
             return Some(text.clone());
         }
         // A wrapping label, walked outward. Bounded rather than open, because
         // a malformed tree must not cost a traversal per node.
+        //
+        // An empty label does not stop the walk. Labels nested inside labels
+        // are invalid markup, but they happen: a checkbox component that draws
+        // its own `<label>` around a styled box, wrapped again by the page to
+        // add the text beside it. The inner label has no text, and returning
+        // its emptiness here made the control anonymous while a name sat one
+        // level further out. Skipping it costs nothing when the markup is
+        // well formed, because a real label has text.
         let mut current = document.get_node(id)?.parent;
         for _ in 0..16 {
             let ancestor = current?;
-            if let Some(text) = self.labels.get(&ancestor) {
+            if let Some(text) = self.labels.get(&ancestor)
+                && !text.trim().is_empty()
+            {
                 return Some(text.clone());
             }
             current = document.get_node(ancestor)?.parent;
