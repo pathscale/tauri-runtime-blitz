@@ -2,6 +2,26 @@
 //!
 //! The first implementation target is Tauri 2.11.x. Its runtime traits are not semver-stable,
 //! so versions stay exact and upgrades are deliberate.
+//!
+//! # What is not here
+//!
+//! The Blitz control surface. The vocabulary, the core that reads and drives a
+//! document, the socket transport and the in-process transport are all
+//! `blitz-control-protocol`, and this crate re-exports none of them.
+//!
+//! Nothing about inspecting a document needs a window, and while it lived here
+//! depending on it meant compiling Tauri: on Linux that reaches GTK, so a
+//! headless host pulled in system libraries to build a binary that opens
+//! nothing. A runtime bridges Tauri to Blitz and owns a native window. It does
+//! not proxy an inspection service, because a runtime that forwards one has not
+//! removed the dependency edge, only renamed it.
+//!
+//! An embedder that names a control type depends on `blitz-control-protocol`
+//! directly, and registers what `Relaunch` means for its process with
+//! `blitz_control_protocol::lifecycle`. What this crate keeps is
+//! `set_agent_control_enabled` and `apply_runtime_debug_options`, which are
+//! about *this runtime's* listener rather than about the protocol, and which
+//! name no protocol type. Nothing public here does.
 
 #[cfg(feature = "runtime")]
 use tauri_runtime::Icon;
@@ -20,35 +40,6 @@ use tauri_utils::{Theme, TitleBarStyle};
 mod ipc;
 #[cfg(feature = "runtime")]
 pub use ipc::attach_ipc_handler;
-#[cfg(all(feature = "agent-control", unix))]
-mod agent_control_server;
-/// Answer an `Inspect` request against a document, from the same code the
-/// runtime uses. A headless host needs this to serve the socket it now can
-/// host; reimplementing it is how a harness ends up disagreeing with the
-/// inspector about what a node is called.
-#[cfg(all(feature = "agent-control", unix))]
-pub use agent::{
-    click_agent_node, focus_agent_node, hover_agent_node, inspect_document, press_agent_key,
-};
-/// Serving inspection from a host that is not this runtime.
-///
-/// The server binds a socket and forwards framed requests to a closure; it has
-/// no window, no event loop and no Tauri in it, and the module's own tests
-/// start one from a bare closure. Exported so a headless host holding a
-/// document can be inspected the same way the application is.
-///
-/// While this was private, inspecting a Blitz document from outside required
-/// opening a window. A QA harness that must not take over the desktop was
-/// pushed into screenshots and tree-file dumps instead, and neither can answer
-/// a question that involves clicking something.
-#[cfg(all(feature = "agent-control", unix))]
-pub use agent_control_server::{AgentControlServer, ControlBridge, ControlBridgeRequest};
-/// The wire protocol, which lives in its own crate so clients can speak it
-/// without building a renderer. Re-exported under the name this crate has
-/// always used it by, so `control_protocol::` paths keep resolving.
-#[cfg(feature = "agent-control")]
-pub use blitz_control_protocol as control_protocol;
-mod agent;
 #[cfg(feature = "runtime")]
 mod script_queue;
 #[cfg(feature = "runtime")]
@@ -57,13 +48,14 @@ pub use script_queue::ScriptQueue;
 mod runtime;
 #[cfg(all(target_os = "macos", feature = "runtime"))]
 mod window_effects;
-#[cfg(all(feature = "diagnostics", unix))]
-pub use agent::{DocumentCapture, capture_document, snapshot_document};
+/// The two capability switches an owner sets, as one decision.
+///
+/// `blitz-traits` owns the type because the collectors it governs are spread
+/// across the shell and script crates. It is the argument of this crate's own
+/// [`apply_runtime_debug_options`], so it is named here rather than leaving an
+/// embedder to depend on `blitz-traits` for one struct.
 #[cfg(feature = "agent-control")]
 pub use blitz_traits::profiling::DebugOptions as RuntimeDebugOptions;
-#[cfg(all(feature = "diagnostics", unix))]
-#[cfg(feature = "runtime")]
-pub use runtime::set_diagnostics_handler;
 #[cfg(feature = "runtime")]
 pub use runtime::{
     BlitzEventLoopProxy, BlitzRuntime, BlitzRuntimeHandle, builder, set_document_factory,
@@ -71,10 +63,7 @@ pub use runtime::{
 };
 #[cfg(all(feature = "agent-control", unix))]
 #[cfg(feature = "runtime")]
-pub use runtime::{
-    agent_control_enabled, apply_runtime_debug_options, set_agent_control_enabled,
-    set_agent_control_handler,
-};
+pub use runtime::{agent_control_enabled, apply_runtime_debug_options, set_agent_control_enabled};
 #[cfg(feature = "agent-control")]
 #[cfg(feature = "runtime")]
 pub use runtime::{
