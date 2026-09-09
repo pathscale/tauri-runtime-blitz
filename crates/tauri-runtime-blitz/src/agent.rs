@@ -804,9 +804,34 @@ pub(crate) fn semantic_name(
         })
         .or_else(|| element_attr(element, "alt").map(std::borrow::Cow::Borrowed))
         .or_else(|| element_attr(element, "title").map(std::borrow::Cow::Borrowed))
-        // Named by their own content.
+        // An option's `label`, which HTML gives precedence over the option's
+        // own text: `<option label="Sixty four bits">u64</option>` announces the
+        // label.
         .or_else(|| {
-            names_from_contents(role).then(|| std::borrow::Cow::Owned(name_text(node, document)))
+            (role == "option")
+                .then(|| element_attr(element, "label"))
+                .flatten()
+                .map(std::borrow::Cow::Borrowed)
+        })
+        // Named by their own content.
+        //
+        // Empty contents are not a name, and stopping here on an empty string
+        // is how the fallbacks below became unreachable for the roles on this
+        // list.
+        .or_else(|| {
+            names_from_contents(role)
+                .then(|| name_text(node, document))
+                .filter(|text| !text.trim().is_empty())
+                .map(std::borrow::Cow::Owned)
+        })
+        // What is left of an option that carries no text at all: a
+        // `<datalist>` entry is written `<option value="u64">`, and its value is
+        // what a browser announces and what a person sees in the list.
+        .or_else(|| {
+            (role == "option")
+                .then(|| element_attr(element, "value"))
+                .flatten()
+                .map(std::borrow::Cow::Borrowed)
         })
         // A placeholder is the last resort a browser falls back to, and it is
         // the only thing naming a great many search and filter fields. Last, so
@@ -2010,6 +2035,26 @@ mod semantic_tests {
             names(&nodes, "region"),
             vec!["a named section".to_string()],
             "a `<section>` with an accessible name is a landmark, not a wrapper"
+        );
+    }
+
+    #[test]
+    fn a_value_only_option_is_named_by_its_value() {
+        let nodes = tree(REPRO);
+        assert_eq!(
+            names(&nodes, "option"),
+            vec!["u64".to_string()],
+            "a `<datalist>` option carries its text in `value`, which is what a browser announces"
+        );
+    }
+
+    #[test]
+    fn an_options_label_attribute_wins_over_its_text() {
+        let nodes = tree(r#"<select><option label="Sixty four bits">u64</option></select>"#);
+        assert_eq!(
+            names(&nodes, "option"),
+            vec!["Sixty four bits".to_string()],
+            "HTML gives `label` precedence over an option's own text"
         );
     }
 
