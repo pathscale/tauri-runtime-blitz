@@ -2177,6 +2177,28 @@ mod semantic_tests {
     }
 
     #[test]
+    fn a_text_run_refuses_a_click_rather_than_panicking() {
+        // Text runs are new ids in a tree a harness drives by id, so the
+        // failure mode when one is pressed has to be a typed refusal and not a
+        // crash inside the control server.
+        let mut document =
+            ScriptDocument::from_html("<pre>plain text in a pre</pre>", DocumentConfig::default());
+        document.inner_mut().resolve(0.0);
+        let DebugResponse::AgentSnapshot(snapshot) = inspect_document(&mut document, None, 0, 1)
+        else {
+            panic!("inspection did not answer with a tree");
+        };
+        let text = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.role == "text")
+            .expect("the pre's text is in the tree");
+        let error = activate_agent_node(&mut document, text.id, 1)
+            .expect_err("a text run has no box to press");
+        assert_eq!(error.code, "notInteractable", "unexpected error: {error:?}");
+    }
+
+    #[test]
     fn text_that_already_names_a_node_is_not_repeated() {
         let nodes = tree(REPRO);
         let text = names(&nodes, "text");
