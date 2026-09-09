@@ -528,8 +528,8 @@ pub(crate) fn semantic_role_ref(element: &blitz_dom::ElementData) -> &str {
         // point and computing it here would walk the section's whole subtree for
         // every element in the document. That is the same set an accessible name
         // can come from for a container: `aria-labelledby` is included so an
-        // author who names a section that way still gets the landmark, even
-        // though `semantic_name` does not yet resolve that reference.
+        // author who names a section that way still gets the landmark, and
+        // `semantic_name` resolves that reference to the name itself.
         "section"
             if ["aria-label", "aria-labelledby", "title"]
                 .iter()
@@ -590,12 +590,23 @@ pub(crate) fn semantic_role_ref(element: &blitz_dom::ElementData) -> &str {
 /// Built once per snapshot rather than searched per node, because the lookup is
 /// "which label points at me" and answering that from the control costs a scan
 /// of the document each time.
+///
+/// `aria-labelledby` is resolved from here too, for the same reason and against
+/// the same single pass: it points at other elements by `id`, and finding them
+/// from the referring node is a document scan per reference.
 #[cfg(all(feature = "agent-control", unix))]
 pub(crate) struct LabelIndex {
     /// The `for` attribute's value, to that label's text.
     by_control_id: std::collections::HashMap<String, String>,
     /// Labels by node id, so an ancestor walk can recognise one it is inside.
     labels: std::collections::HashMap<blitz_dom::NodeId, String>,
+    /// Every `id` in the document, to the node carrying it.
+    ///
+    /// The node rather than its text, because the text a reference resolves to
+    /// is only ever read for the few elements that carry an `aria-labelledby`.
+    /// Naming every element in the document up front to answer a question almost
+    /// none of them ask would walk each subtree twice per snapshot.
+    by_dom_id: std::collections::HashMap<String, blitz_dom::NodeId>,
 }
 
 #[cfg(all(feature = "agent-control", unix))]
@@ -603,10 +614,18 @@ impl LabelIndex {
     pub(crate) fn build(document: &blitz_dom::BaseDocument) -> Self {
         let mut by_control_id = std::collections::HashMap::new();
         let mut labels = std::collections::HashMap::new();
+        let mut by_dom_id = std::collections::HashMap::new();
         for (id, node) in document.tree().iter() {
             let Some(element) = node.element_data() else {
                 continue;
             };
+            // The first one wins, which is what `getElementById` answers when a
+            // document repeats an `id`. Duplicate ids are invalid markup and a
+            // reference to one is ambiguous by construction, so the rule here is
+            // only about answering the same way twice.
+            if let Some(dom_id) = element_attr(element, "id") {
+                by_dom_id.entry(dom_id.to_owned()).or_insert(id);
+            }
             if element.name.local.as_ref() != "label" {
                 continue;
             }
@@ -623,7 +642,81 @@ impl LabelIndex {
         Self {
             by_control_id,
             labels,
+            by_dom_id,
         }
+    }
+
+    /// The name an element gives itself by pointing at other elements.
+    ///
+    /// # Why this exists
+    ///
+    /// `aria-labelledby` was not followed at all, so an element named that way
+    /// arrived anonymous. Two reports, independently: a QA agent giving a
+    /// dashboard card an identity on ui-starter-app found the region came back
+    /// unnamed and had to fall back to `aria-label`, and the `<section>` rule
+    /// beside this one reads `aria-labelledby` to decide the element is a
+    /// `region`, so such a section got the landmark role and an empty name,
+    /// which is worse than the wrapper it used to be reported as.
+    ///
+    /// # What it computes
+    ///
+    /// The attribute is a space-separated list of ids. Each referenced element's
+    /// rendered text is read in the order the ids are written, and the results
+    /// are joined by a single space.
+    ///
+    /// # Hidden referenced elements
+    ///
+    /// A referenced element contributes its text **even when it is not
+    /// rendered**, which is the opposite of the rule `name_text` applies inside
+    /// a subtree. Both are accname: a node that is hidden and *not* referenced
+    /// returns the empty string, while one directly referenced by
+    /// `aria-labelledby` is exempt from that check. The exemption is the whole
+    /// point of the pattern -- `<span hidden id="units">bytes per second</span>`
+    /// exists to name something without appearing itself -- and a resolver that
+    /// skipped it would name nothing on exactly the markup written to use it.
+    ///
+    /// The exemption is for the element named by the id, not for its subtree:
+    /// `name_text` goes on skipping hidden elements inside it, so the half of a
+    /// responsive label that is not shown stays out of the name. An element
+    /// nested inside a `display: none` referenced element is not hidden by that
+    /// rule, because its own computed display is not `none`, which is the answer
+    /// a browser gives for the same markup.
+    ///
+    /// # Termination
+    ///
+    /// A reference resolves through `name_text`, which reads text, and never
+    /// through `semantic_name`, which would consult `aria-labelledby` again. So
+    /// `<h2 id="h" aria-labelledby="h">Fleet</h2>` is named "Fleet" rather than
+    /// recursing, and no cycle between elements can exist to be guarded against.
+    /// ARIA reaches the same answer by forbidding the second traversal.
+    fn labelled_by(
+        &self,
+        document: &blitz_dom::BaseDocument,
+        element: &blitz_dom::ElementData,
+    ) -> Option<String> {
+        let reference = element_attr(element, "aria-labelledby")?;
+        let mut name = String::new();
+        for token in reference.split_ascii_whitespace() {
+            // An id that matches nothing contributes nothing, rather than
+            // abandoning the whole name. A list of ids is written by hand and
+            // one of them going stale is the common way it breaks; the names
+            // that do still resolve are worth more than an empty string.
+            let Some(node) = self
+                .by_dom_id
+                .get(token)
+                .and_then(|id| document.get_node(*id))
+            else {
+                continue;
+            };
+            if !name.is_empty() {
+                name.push(' ');
+            }
+            name.push_str(&name_text(node, document));
+        }
+        // Nothing resolved, or everything that did was blank. That is the
+        // absence of a name rather than a name, and returning it would make
+        // every rule below this one unreachable for the element.
+        (!name.trim().is_empty()).then_some(name)
     }
 
     /// The label text for a control, by association or by containment.
@@ -821,8 +914,17 @@ pub(crate) fn semantic_name(
     id: blitz_dom::NodeId,
     labels: &LabelIndex,
 ) -> String {
-    let name = element_attr(element, "aria-label")
-        .map(std::borrow::Cow::Borrowed)
+    // The elements an author pointed at, which outrank everything below.
+    //
+    // ARIA's order: `aria-labelledby` first, then `aria-label`, then the host
+    // language's own labelling, then contents. It is first because it is the
+    // most deliberate thing an author can write. Naming one element by the
+    // visible text of another says the two belong together, and it is the only
+    // rule here that can name something from outside itself.
+    let name = labels
+        .labelled_by(document, element)
+        .map(std::borrow::Cow::Owned)
+        .or_else(|| element_attr(element, "aria-label").map(std::borrow::Cow::Borrowed))
         // The label a form control was given. After `aria-label`, which is the
         // author overriding the visible text on purpose, and before `title`,
         // which is a tooltip rather than a name.
@@ -2308,6 +2410,133 @@ mod semantic_tests {
             roles(&nodes, "region").is_empty(),
             "HTML-AAM gives an unnamed section no landmark role, so a page of \
              plain sections does not grow a landmark per wrapper"
+        );
+    }
+
+    /// The shape both reports arrived as: a heading names the region under it.
+    ///
+    /// A card with a title above its body is how a dashboard is written, and
+    /// `aria-labelledby` pointing at that title is the markup for saying so
+    /// without repeating the words in an attribute.
+    #[test]
+    fn a_region_is_named_by_the_heading_it_points_at() {
+        let nodes = tree(
+            r#"<h2 id="title">Fleet health</h2>
+               <section aria-labelledby="title"><p>text</p></section>"#,
+        );
+        assert_eq!(
+            names(&nodes, "region"),
+            vec!["Fleet health".to_string()],
+            "a section named by reference is a named landmark, not an anonymous one"
+        );
+    }
+
+    #[test]
+    fn a_list_of_references_is_joined_in_the_order_it_is_written() {
+        let nodes = tree(
+            r#"<span id="unit">per second</span><span id="what">Requests</span>
+               <button aria-labelledby="what unit">?</button>"#,
+        );
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Requests per second".to_string()],
+            "the ids are read in the order the author listed them, not in document order, \
+             and their text is joined by a single space"
+        );
+    }
+
+    #[test]
+    fn a_reference_outranks_an_aria_label_and_the_contents() {
+        let nodes = tree(
+            r#"<span id="title">Fleet health</span>
+               <button aria-labelledby="title" aria-label="overridden">Save</button>"#,
+        );
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Fleet health".to_string()],
+            "ARIA ranks `aria-labelledby` above `aria-label`, which is above name from contents"
+        );
+    }
+
+    /// ARIA exempts a directly referenced element from the hidden check, which
+    /// is the opposite of the rule applied inside a name's own subtree. It has
+    /// to be, or the pattern the exemption exists for names nothing: an element
+    /// written only to be pointed at is routinely not shown.
+    #[test]
+    fn a_referenced_element_names_even_when_it_is_not_rendered() {
+        let nodes = tree(
+            r#"<span id="title" style="display: none">Fleet <b>health</b></span>
+               <section aria-labelledby="title"><p>text</p></section>"#,
+        );
+        assert_eq!(
+            names(&nodes, "region"),
+            vec!["Fleet health".to_string()],
+            "a referenced element contributes its whole text even when it is hidden"
+        );
+    }
+
+    /// The other half of that rule, so the exemption stays as narrow as ARIA
+    /// makes it: the element named by the id is exempt, its subtree is not.
+    #[test]
+    fn a_reference_still_skips_what_is_hidden_inside_it() {
+        let nodes = tree(
+            r#"<span id="title">Book<span style="display: none"> a diagnostic</span></span>
+               <button aria-labelledby="title">?</button>"#,
+        );
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Book".to_string()],
+            "the hidden half of a responsive label stays out of a name reached by reference too"
+        );
+    }
+
+    #[test]
+    fn a_reference_to_nothing_falls_through_to_the_next_rule() {
+        let nodes = tree(r#"<button aria-labelledby="deleted" aria-label="Save">?</button>"#);
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Save".to_string()],
+            "an id that matches no element is not a name, so the rules below it stay reachable"
+        );
+        let nodes = tree(r#"<button aria-labelledby="deleted">Save</button>"#);
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Save".to_string()],
+            "with nothing else declared the control is still named by its own contents"
+        );
+    }
+
+    #[test]
+    fn a_reference_that_resolves_to_no_text_falls_through_too() {
+        let nodes = tree(
+            r#"<span id="title"></span>
+               <button aria-labelledby="title">Save</button>"#,
+        );
+        assert_eq!(
+            names(&nodes, "button"),
+            vec!["Save".to_string()],
+            "an element that exists and says nothing gives no name, which is not the same as \
+             giving an empty one"
+        );
+    }
+
+    /// A self-reference resolves to the element's own text and terminates.
+    ///
+    /// The `aria-label` is what makes this an assertion rather than a tautology.
+    /// A resolver that followed a reference by computing the referenced
+    /// element's *name* would either not terminate here or, with a cycle guard,
+    /// abandon the reference and answer "overridden". Reading the reference as
+    /// text is what gives the heading's own words, and it is why no cycle guard
+    /// is needed anywhere in this path.
+    #[test]
+    fn an_element_that_references_itself_is_named_by_its_own_contents() {
+        let nodes = tree(
+            r#"<h2 id="self" aria-labelledby="self" aria-label="overridden">Fleet health</h2>"#,
+        );
+        assert_eq!(
+            names(&nodes, "heading"),
+            vec!["Fleet health".to_string()],
+            "a reference is read as text and never as another name computation"
         );
     }
 }
