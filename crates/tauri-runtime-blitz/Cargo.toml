@@ -20,36 +20,34 @@ style = { version = "0.20.0", package = "stylo" }
 # not here: `system-fonts` should never have been a default of `blitz-dom`, and
 # every consumer copying its default list is a copy that goes stale the next
 # time a default is added. Fixed at the source in pathscale/ps-blitz#87.
-blitz-dom = { package = "ps-blitz-dom", version = "^0.4", optional = true }
+# Still named directly: the runtime downcasts a window.s document and reads
+# `NodeId` and the `Document` trait. Nothing about roles, names or capture is
+# reached from here any more.
+blitz-dom = { package = "ps-blitz-dom", version = "^0.4.8", optional = true }
 # No `system-fonts`. It reaches `fontique/system` and, on Linux, the
 # `yeslogic-fontconfig-sys` system library, so enabling it here would decide
 # that every consumer of this crate needs one installed, including a headless
 # one that reads no font catalogue. An application that wants the machine's
 # fonts asks for them itself, and both consumers already do.
 blitz-script = { package = "ps-blitz-script", version = "^0.4" }
-blitz-control-protocol = { version = "^0.4", optional = true }
+# The control surface: the vocabulary, the core, and the socket transport this
+# runtime serves its own document over. `capture` carries the offscreen paint
+# and the diagnostic snapshots, and pulls `engine` and `blitz-shell` with it.
+blitz-control-protocol = { version = "^0.5", default-features = false, optional = true }
+# The window renderer's own alpha mode, which is why this is not optional: the
+# offscreen capture that used to need it here is `blitz-control-protocol`'s.
 anyrender = { package = "ps-anyrender", version = "^0.13.0" }
-# Offscreen capture, behind `diagnostics` so a shipping build carries neither.
-#
-# The CPU renderer on purpose: capture must not need a GPU, a surface or a
-# display server, or it stops working in the places it is most needed (CI, a
-# headless Linux box, an Android target). It draws the same scene through the
-# same `blitz-paint` entry point the window uses, so what it returns is the
-# real frame rather than a second opinion about it.
-anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.0", optional = true }
-blitz-paint = { package = "ps-blitz-paint", version = "^0.4", optional = true }
-base64 = { version = "0.22", optional = true }
 peniko = "0.6"
 
 blitz-shell = { package = "ps-blitz-shell", version = "^0.4", default-features = false, features = ["clipboard", "svg"] }
 blitz-traits = { package = "ps-blitz-traits", version = "^0.4", optional = true }
 http = "1"
-endpoint-libs = { version = "^3", default-features = false, features = ["agent-control"], optional = true }
-keyboard-types = { version = "0.7", optional = true }
+# No `endpoint-libs`, `keyboard-types`, `serde` or `serde_json`. They were the
+# wire framing, the key table and the request types of a control surface this
+# crate no longer implements; `blitz-control-protocol` names them now, and a
+# consumer that wants them names it.
 libc = "0.2"
 raw-window-handle = "0.6"
-serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
 tauri = { version = "2", default-features = false, optional = true }
 tauri-runtime = { version = "2", optional = true }
 tauri-utils = { version = "2", optional = true }
@@ -81,15 +79,27 @@ runtime = [
     "dep:tauri-utils",
     "dep:anyrender_vello",
 ]
-agent-control = ["blitz-shell/debug-control", "dep:blitz-control-protocol", "dep:blitz-dom", "dep:blitz-traits", "dep:endpoint-libs", "dep:keyboard-types", "dep:serde", "dep:serde_json", "dep:tokio"]
-debug-control = ["blitz-script/debug-control", "blitz-shell/debug-control"]
-diagnostics = [
-    "agent-control",
-    "debug-control",
-    "dep:anyrender_vello_cpu",
-    "dep:base64",
-    "dep:blitz-paint",
+# Serve this runtime's own document over the control socket.
+#
+# The surface itself is `blitz-control-protocol`: `engine` is the core that
+# reads and drives a document, `server` is the socket. Neither is this crate.
+# What this feature adds here is the wiring: which window's document is the
+# active one, the listener's lifetime, and what `Relaunch` and `Quit` mean for
+# a process this runtime started.
+agent-control = [
+    "blitz-control-protocol/engine",
+    "blitz-control-protocol/server",
+    "blitz-shell/debug-control",
+    "dep:blitz-control-protocol",
+    "dep:blitz-dom",
+    "dep:blitz-traits",
+    "dep:tokio",
 ]
+debug-control = ["blitz-script/debug-control", "blitz-shell/debug-control"]
+# Collection, which is where the expense is. The offscreen renderer, the
+# snapshot readers and the frame metrics are all `blitz-control-protocol`'s
+# `capture`; a shipping build that leaves this off carries none of them.
+diagnostics = ["agent-control", "blitz-control-protocol/capture", "debug-control"]
 # Swap the general-purpose Vello renderer for the lighter hybrid pipeline.
 # UI is overwhelmingly rectangles and text, which Vello tessellates and bins
 # through a compute pass built for arbitrary vector art. The hybrid backend
@@ -107,6 +117,11 @@ macos-private-api = ["runtime", "tauri/macos-private-api", "tauri-runtime/macos-
 
 [dev-dependencies]
 tauri = { version = "2", default-features = false, features = ["test"] }
+# The IPC round-trip test builds a request body and reads the reply back. It was
+# a dev use of a dependency the crate itself carried for the control protocol,
+# so removing that left the test with no JSON: a test dependency now, which is
+# what it always was.
+serde_json = "1"
 
 # Only on macOS, and only for the one test that needs a face:
 # `setting_a_node_value_replaces_text_and_dispatches_input`. Replacing a
