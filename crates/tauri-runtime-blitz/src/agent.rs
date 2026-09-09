@@ -490,8 +490,20 @@ pub(crate) fn element_attr<'a>(element: &'a blitz_dom::ElementData, name: &str) 
 
 #[cfg(all(feature = "agent-control", unix))]
 pub(crate) fn semantic_role(element: &blitz_dom::ElementData) -> String {
+    semantic_role_ref(element).to_owned()
+}
+
+/// The same answer without owning it.
+///
+/// A text node asks every element above it whether that element is already
+/// named by the words in question, and the owned form allocated a `String` per
+/// ancestor per text node to be compared against a fixed list and dropped. The
+/// role is either a `&'static str` or the `role` attribute's own text, so
+/// nothing here needs a copy.
+#[cfg(all(feature = "agent-control", unix))]
+pub(crate) fn semantic_role_ref(element: &blitz_dom::ElementData) -> &str {
     if let Some(role) = element_attr(element, "role") {
-        return role.into();
+        return role;
     }
     let tag = element.name.local.as_ref();
     match tag {
@@ -558,7 +570,6 @@ pub(crate) fn semantic_role(element: &blitz_dom::ElementData) -> String {
         },
         _ => "generic",
     }
-    .into()
 }
 
 /// Where the labels are, so a control can be asked what names it.
@@ -945,7 +956,7 @@ pub(crate) fn exposed_text(
             ) {
                 return None;
             }
-            if names_from_contents(&semantic_role(element)) {
+            if names_from_contents(semantic_role_ref(element)) {
                 return None;
             }
         }
