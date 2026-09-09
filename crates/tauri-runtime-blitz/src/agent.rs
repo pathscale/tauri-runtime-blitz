@@ -508,7 +508,22 @@ pub(crate) fn semantic_role(element: &blitz_dom::ElementData) -> String {
         "li" => "listitem",
         "table" => "table",
         "tr" => "row",
-        "td" | "th" => "cell",
+        "td" => "cell",
+        // A header cell is not a cell.
+        //
+        // HTML-AAM maps `<th>` to `columnheader` or `rowheader`, and blitz-dom's
+        // own accessibility tree already does exactly this, so the two trees
+        // disagreed about the same document. What a header is for is saying
+        // which column or row the values under it belong to, and a check that
+        // wants "the Version column" has nothing to ask for while every header
+        // is spelled the same as the data beneath it.
+        //
+        // `scope` decides. Without one this is a column header, which is the
+        // common case (a `<thead>` row) and what blitz-dom falls back to.
+        "th" => match element_attr(element, "scope") {
+            Some("row") | Some("rowgroup") => "rowheader",
+            _ => "columnheader",
+        },
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => "heading",
         "input" => match element_attr(element, "type").unwrap_or("text") {
             "checkbox" => "checkbox",
@@ -1850,6 +1865,77 @@ mod tests {
         assert!(
             error.message.contains("not visible"),
             "unexpected error: {error:?}"
+        );
+    }
+}
+
+/// What the semantic tree says about one small document.
+///
+/// Every test here reads the tree through `inspect_document`, which is the
+/// entry point a headless QA host calls, rather than through the naming
+/// helpers directly. A role or a name that is right inside the crate and wrong
+/// by the time it reaches the socket is the defect these were written for.
+#[cfg(all(test, feature = "agent-control", unix))]
+mod semantic_tests {
+    use super::*;
+    use blitz_dom::DocumentConfig;
+
+    /// One document, reproducing every naming and role defect this module
+    /// covers. Kept whole rather than split per test so a fix that repairs one
+    /// case by breaking another is caught by the next assertion down.
+    const REPRO: &str = r#"<table aria-label="named table">
+  <thead><tr><th scope="col">Crate</th></tr></thead>
+  <tbody><tr><td>worktable</td></tr></tbody>
+</table>
+<section aria-label="a named section"><p>text</p></section>
+<datalist id="t"><option value="u64"></option></datalist>
+<pre>plain text in a pre</pre>
+<div role="tooltip">tooltip text</div>"#;
+
+    fn tree(html: &str) -> Vec<SemanticNode> {
+        let mut document = ScriptDocument::from_html(html, DocumentConfig::default());
+        document.inner_mut().resolve(0.0);
+        match inspect_document(&mut document, None, 0, 1) {
+            DebugResponse::AgentSnapshot(snapshot) => snapshot.nodes,
+            other => panic!("inspection did not answer with a tree: {other:?}"),
+        }
+    }
+
+    fn roles<'a>(nodes: &'a [SemanticNode], role: &str) -> Vec<&'a SemanticNode> {
+        nodes.iter().filter(|node| node.role == role).collect()
+    }
+
+    fn names(nodes: &[SemanticNode], role: &str) -> Vec<String> {
+        roles(nodes, role)
+            .into_iter()
+            .map(|node| node.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_header_cell_is_a_header() {
+        let nodes = tree(REPRO);
+        assert_eq!(
+            roles(&nodes, "columnheader").len(),
+            1,
+            "a `<th scope=\"col\">` is a column header, not an ordinary cell"
+        );
+        assert_eq!(
+            roles(&nodes, "cell").len(),
+            1,
+            "only the `<td>` is a cell"
+        );
+    }
+
+    #[test]
+    fn a_row_scoped_header_is_a_row_header() {
+        let nodes = tree(
+            r#"<table><tr><th scope="row">Crate</th><td>worktable</td></tr></table>"#,
+        );
+        assert_eq!(
+            roles(&nodes, "rowheader").len(),
+            1,
+            "`scope=\"row\"` makes a header describe its row, which is what blitz-dom reports"
         );
     }
 }
