@@ -503,6 +503,30 @@ pub(crate) fn semantic_role(element: &blitz_dom::ElementData) -> String {
         "img" => "img",
         "nav" => "navigation",
         "main" => "main",
+        // A named section is a landmark; an unnamed one is nothing.
+        //
+        // HTML-AAM: `<section>` maps to `region` when it has an accessible
+        // name, and to `generic` otherwise. Both halves matter. A named section
+        // is how a page says "this part is the connection settings", and it
+        // arrived indistinguishable from the `<div>`s around it; an unnamed one
+        // is a wrapper, and promoting those would put a landmark around every
+        // block on a page that reaches for `<section>` as a synonym for `<div>`.
+        //
+        // Attributes only, because the name has not been computed yet at this
+        // point and computing it here would walk the section's whole subtree for
+        // every element in the document. That is the same set an accessible name
+        // can come from for a container: `aria-labelledby` is included so an
+        // author who names a section that way still gets the landmark, even
+        // though `semantic_name` does not yet resolve that reference.
+        "section"
+            if ["aria-label", "aria-labelledby", "title"]
+                .iter()
+                .any(|name| {
+                    element_attr(element, name).is_some_and(|value| !value.trim().is_empty())
+                }) =>
+        {
+            "region"
+        }
         "form" => "form",
         "ul" | "ol" => "list",
         "li" => "listitem",
@@ -1971,6 +1995,26 @@ mod semantic_tests {
             roles(&nodes, "rowheader").len(),
             1,
             "`scope=\"row\"` makes a header describe its row, which is what blitz-dom reports"
+        );
+    }
+
+    #[test]
+    fn a_named_section_is_a_region() {
+        let nodes = tree(REPRO);
+        assert_eq!(
+            names(&nodes, "region"),
+            vec!["a named section".to_string()],
+            "a `<section>` with an accessible name is a landmark, not a wrapper"
+        );
+    }
+
+    #[test]
+    fn an_unnamed_section_is_not_a_region() {
+        let nodes = tree("<section><p>text</p></section>");
+        assert!(
+            roles(&nodes, "region").is_empty(),
+            "HTML-AAM gives an unnamed section no landmark role, so a page of \
+             plain sections does not grow a landmark per wrapper"
         );
     }
 }
