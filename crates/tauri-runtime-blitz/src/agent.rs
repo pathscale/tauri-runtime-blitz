@@ -765,6 +765,11 @@ pub(crate) fn names_from_contents(role: &str) -> bool {
             | "option"
             | "alert"
             | "status"
+            // The same class as `alert` and `status`: a tooltip exists to say
+            // one thing, and what it says is its content. Anonymous, it is a
+            // node reporting that some explanation is on screen without
+            // reporting the explanation.
+            | "tooltip"
             | "menuitem"
             | "menuitemcheckbox"
             | "menuitemradio"
@@ -2005,6 +2010,16 @@ mod semantic_tests {
             names(&nodes, "region"),
             vec!["a named section".to_string()],
             "a `<section>` with an accessible name is a landmark, not a wrapper"
+        );
+    }
+
+    #[test]
+    fn a_tooltip_says_what_it_says() {
+        let nodes = tree(REPRO);
+        assert_eq!(
+            names(&nodes, "tooltip"),
+            vec!["tooltip text".to_string()],
+            "a tooltip is named by its contents, and its contents are the whole point of it"
         );
     }
 
