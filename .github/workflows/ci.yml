@@ -25,10 +25,10 @@ jobs:
       - name: Verify protocol ownership and compatible dependency
         run: |
           test ! -e crates/blitz-control-protocol
-          cargo tree -p tauri-runtime-blitz --features agent-control \
+          cargo tree -p izumo --features agent-control \
             -i blitz-control-protocol
       - name: Package the runtime without workspace-only dependencies
-        run: cargo package -p tauri-runtime-blitz --no-verify
+        run: cargo package -p izumo --no-verify
 
   runtime:
     name: Runtime (macOS)
@@ -55,16 +55,16 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Clippy
-        run: cargo clippy -p tauri-runtime-blitz --all-targets --all-features -- -D warnings
+        run: cargo clippy -p izumo --all-targets --all-features -- -D warnings
       - name: Test
         # Runtime debug switches and sampling sessions are process-global by
         # design, so their tests must not mutate that state concurrently.
-        run: cargo test -p tauri-runtime-blitz --all-features -- --test-threads=1
+        run: cargo test -p izumo --all-features -- --test-threads=1
       - name: Verify publishable package
-        run: cargo package -p tauri-runtime-blitz
+        run: cargo package -p izumo
       - name: Verify Liquid Glass class
         run: >-
-          cargo test -p tauri-runtime-blitz --all-features
+          cargo test -p izumo --all-features
           liquid_glass_class_is_available -- --ignored
 
   # The headless surface, built without the Tauri runtime.
@@ -90,7 +90,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends libfontconfig-dev
       - name: Clippy
         run: |
-          cargo clippy -p tauri-runtime-blitz \
+          cargo clippy -p izumo \
             --no-default-features --features agent-control -- -D warnings
       # Renderers as well as window stacks. This checked for `tauri`, GTK and
       # WebKit and passed while the headless build linked wgpu, two versions of
@@ -109,13 +109,13 @@ jobs:
       # depend on which runner this lands on.
       - name: No window stack or GPU renderer in the graph
         run: |
-          found=$(cargo tree -p tauri-runtime-blitz --edges normal \
+          found=$(cargo tree -p izumo --edges normal \
             --target x86_64-unknown-linux-gnu \
             --no-default-features --features agent-control \
             | grep -ciE 'tauri v|gtk|glib|webkit|soup|wgpu|naga|ps-vello v|anyrender-vello v' || true)
           if [ "$found" != "0" ]; then
             echo "the headless build pulled in $found window-stack or renderer crates" >&2
-            cargo tree -p tauri-runtime-blitz --edges normal \
+            cargo tree -p izumo --edges normal \
               --target x86_64-unknown-linux-gnu \
               --no-default-features --features agent-control \
               | grep -iE 'tauri v|gtk|glib|webkit|soup|wgpu|naga|ps-vello v|anyrender-vello v' >&2 || true
