@@ -89,7 +89,7 @@ static AGENT_CONTROL_RUNTIME: OnceLock<Mutex<Option<Weak<Mutex<AgentControlRunti
 /// own lock rather than sharing the transport's: the state being serialised is
 /// this runtime's, and the transport has no idea a second one exists.
 #[cfg(all(feature = "agent-control", unix, test))]
-static CONTROL_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static CONTROL_TEST_LOCK: nagoya::sync::RwLock<()> = nagoya::sync::RwLock::new(());
 
 thread_local! {
     static CURRENT_BLITZ_APPLICATION: std::cell::Cell<*const ()> = const {
@@ -1408,7 +1408,7 @@ mod tests {
     #[cfg(all(feature = "agent-control", unix))]
     #[tokio::test(flavor = "current_thread")]
     async fn control_interface_is_absent_until_explicitly_enabled() {
-        let _guard = CONTROL_TEST_LOCK.lock().await;
+        let _guard = CONTROL_TEST_LOCK.write().await;
         let bridge: ControlBridge = Arc::new(|_| {
             let (sender, receiver) = tokio::sync::oneshot::channel();
             let _ = sender.send(DebugResponse::Ack);
