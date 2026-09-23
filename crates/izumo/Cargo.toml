@@ -1,5 +1,5 @@
 [package]
-name = "tauri-runtime-blitz"
+name = "izumo"
 description = "Tauri runtime backed by Blitz and Boa"
 version.workspace = true
 edition.workspace = true

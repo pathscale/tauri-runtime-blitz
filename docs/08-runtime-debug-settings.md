@@ -11,12 +11,12 @@ Blitz applications ship two independent, owner-controlled settings:
 
 The two-boolean contract is defined by `ps-blitz-traits::profiling::DebugOptions`
 so Tauri and non-Tauri embedders use the same dependency rule.
-`tauri-runtime-blitz` re-exports it as `RuntimeDebugOptions` and applies its own
+`izumo` re-exports it as `RuntimeDebugOptions` and applies its own
 socket lifecycle with one call:
 
 ```rust
-tauri_runtime_blitz::apply_runtime_debug_options(
-    tauri_runtime_blitz::RuntimeDebugOptions {
+izumo::apply_runtime_debug_options(
+    izumo::RuntimeDebugOptions {
         inspection_and_agent_control: settings.inspection_enabled,
         deep_intrusive_profiling: settings.deep_profiling_enabled,
     },
@@ -32,7 +32,7 @@ the same for the collectors they use.
 
 ## Build and runtime contract
 
-- Compile `tauri-runtime-blitz/diagnostics` into a build that may need a user
+- Compile `izumo/diagnostics` into a build that may need a user
   trace. Compilation makes the capability available; it does not activate it.
 - Both settings default to false. Disabled inspection creates no thread,
   listener, socket, descriptor, poll, or reconnect work.
