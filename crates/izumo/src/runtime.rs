@@ -763,7 +763,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                         ControlBridgeRequest::Diagnostics(_) => DebugResponse::Error(DebugError {
                             code: "diagnosticsUnavailable".into(),
                             message: "this build has no diagnostics feature; rebuild with \
-                                      tauri-runtime-blitz/diagnostics"
+                                      izumo/diagnostics"
                                 .into(),
                         }),
                         // Answered here, and only here. There used to be a
@@ -1093,7 +1093,7 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
         application.callback = Some(Box::new(callback));
         runtime_trace("native event loop run_app started");
         if let Err(error) = self.event_loop.run_app(application) {
-            eprintln!("tauri-runtime-blitz: event loop failed: {error}");
+            eprintln!("izumo: event loop failed: {error}");
         }
         runtime_trace("native event loop run_app returned");
     }

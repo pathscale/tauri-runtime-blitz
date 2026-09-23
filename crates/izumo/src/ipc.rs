@@ -25,7 +25,7 @@ pub fn attach_ipc_handler<T, R>(
 {
     document.set_ipc_handler(move |body| match ipc_request(&page_url, body) {
         Ok(request) => handler(webview.clone(), request),
-        Err(error) => eprintln!("tauri-runtime-blitz: could not construct IPC request: {error}"),
+        Err(error) => eprintln!("izumo: could not construct IPC request: {error}"),
     });
 }
 

@@ -7,6 +7,6 @@ version = "0.4.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = true
-homepage = "https://github.com/pathscale/tauri-runtime-blitz"
-repository = "https://github.com/pathscale/tauri-runtime-blitz"
+homepage = "https://github.com/pathscale/izumo"
+repository = "https://github.com/pathscale/izumo"
 
