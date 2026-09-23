@@ -1,4 +1,4 @@
-# tauri-runtime-blitz
+# izumo (IRB)
 
 A Tauri v2 `Runtime` implementation backed by [Blitz](https://github.com/DioxusLabs/blitz)
 (pure-Rust HTML/CSS engine) and [Boa](https://github.com/boa-dev/boa) (pure-Rust JS engine),
@@ -8,7 +8,7 @@ replacing `tauri-runtime-wry` and with it the OS webview.
 
 ```
 today:   Tauri shell -> tauri-runtime-wry -> WKWebView (C++ WebKit + JSC JIT) -> Solid app
-target:  Tauri shell -> tauri-runtime-blitz -> Blitz + Boa (Rust)             -> Solid app
+target:  Tauri shell -> izumo -> Blitz + Boa (Rust)             -> Solid app
 ```
 
 Tauri keeps windowing, native menu, updater, dialog plugins, packaging, signing, and application
@@ -45,5 +45,5 @@ Crates publish only from a `v<workspace-version>` tag or a manually dispatched
 `Publish crates` workflow with the exact workspace version. The workflow uses
 the repository's `CARGO_REGISTRY_TOKEN`, publishes `blitz-control-protocol`
 first, waits until that version resolves from the registry index, then packages
-and publishes `tauri-runtime-blitz`. A Cargo.toml version edit alone never
+and publishes `izumo`. A Cargo.toml version edit alone never
 publishes anything.

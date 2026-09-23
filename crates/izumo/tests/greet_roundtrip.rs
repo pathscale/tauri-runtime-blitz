@@ -3,7 +3,7 @@ use blitz_script::ScriptDocument;
 use tauri::ipc::CallbackFn;
 use tauri::test::{INVOKE_KEY, get_ipc_response, mock_builder, mock_context, noop_assets};
 use tauri::webview::InvokeRequest;
-use tauri_runtime_blitz::ScriptQueue;
+use izumo::ScriptQueue;
 
 #[tauri::command]
 fn greet(name: String) -> String {
