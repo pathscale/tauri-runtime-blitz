@@ -54,7 +54,6 @@ tauri-utils = { version = "2", optional = true }
 url = "2"
 winit = "0.31.0-beta.2"
 nagoya = { version = "^0.1.11", optional = true }
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync"], optional = true }
 
 [features]
 default = ["agent-control", "runtime"]
@@ -94,7 +93,6 @@ agent-control = [
     "dep:blitz-control-protocol",
     "dep:blitz-dom",
     "dep:blitz-traits",
-    "dep:tokio",
     "dep:nagoya",
 ]
 debug-control = ["blitz-script/debug-control", "blitz-shell/debug-control"]
