@@ -780,7 +780,7 @@ impl<T: UserEvent> RuntimeApplication<T> {
                             self.handle_builtin_diagnostics(request)
                         }
                     };
-                    let _ = response.send(result);
+                    response.fill(result);
                 }
             }
         }
@@ -1416,7 +1416,7 @@ mod tests {
             let bridge: ControlBridge = Arc::new(|_| {
                 let sender = Once::new();
                 let receiver = Arc::clone(&sender);
-                let _ = sender.send(DebugResponse::Ack);
+                sender.fill(DebugResponse::Ack);
                 receiver
             });
             let events = Latest::new();
