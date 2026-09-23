@@ -42,6 +42,8 @@ use winit::platform::macos::{ApplicationHandlerExtMacOS, WindowAttributesMacOS};
 
 #[cfg(all(feature = "diagnostics", unix))]
 use blitz_control_protocol::document::snapshot_document;
+#[cfg(all(feature = "agent-control", unix))]
+use blitz_control_protocol::latest::{Latest, Once};
 #[cfg(all(feature = "diagnostics", unix))]
 use blitz_control_protocol::{
     DebugSnapshot, DiagnosticsRequest, SnapshotRequest, WindowComposition,
@@ -129,7 +131,7 @@ pub fn set_runtime_trace(trace: impl Fn(&str) + Send + Sync + 'static) {
 #[cfg(all(feature = "agent-control", unix))]
 struct AgentControlRuntime {
     bridge: ControlBridge,
-    events: tokio::sync::watch::Sender<Option<DebugEvent>>,
+    events: Arc<Latest<DebugEvent>>,
     server: Option<AgentControlServer>,
 }
 
@@ -156,7 +158,7 @@ pub fn set_agent_control_enabled(enabled: bool) -> std::io::Result<()> {
                     version: env!("CARGO_PKG_VERSION").into(),
                     diagnostics: cfg!(feature = "diagnostics"),
                 },
-                runtime.events.subscribe(),
+                Arc::clone(&runtime.events),
             )?)
         }
         (false, true) => runtime.server = None,
@@ -287,7 +289,7 @@ enum RuntimeMessage<T: UserEvent> {
     #[cfg(all(feature = "agent-control", unix))]
     Control {
         request: ControlBridgeRequest,
-        response: tokio::sync::oneshot::Sender<DebugResponse>,
+        response: Arc<Once<DebugResponse>>,
     },
 }
 
@@ -553,7 +555,7 @@ struct RuntimeApplication<T: UserEvent> {
     #[cfg(all(feature = "agent-control", unix))]
     paint_revision: u64,
     #[cfg(all(feature = "agent-control", unix))]
-    control_events: tokio::sync::watch::Sender<Option<DebugEvent>>,
+    control_events: Arc<Latest<DebugEvent>>,
 }
 
 impl<T: UserEvent> RuntimeApplication<T> {
@@ -836,10 +838,9 @@ impl<T: UserEvent> ApplicationHandler for RuntimeApplication<T> {
         #[cfg(all(feature = "agent-control", unix))]
         if paint_committed {
             self.paint_revision = self.paint_revision.saturating_add(1);
-            self.control_events
-                .send_replace(Some(DebugEvent::PaintCommitted {
-                    revision: self.paint_revision,
-                }));
+            self.control_events.set_now(DebugEvent::PaintCommitted {
+                revision: self.paint_revision,
+            });
         }
     }
 
@@ -924,14 +925,16 @@ impl<T: UserEvent> Runtime<T> for BlitzRuntime<T> {
         let (agent_control, control_events) = {
             let control_context = context.clone();
             let bridge: ControlBridge = Arc::new(move |request| {
-                let (response, receiver) = tokio::sync::oneshot::channel();
+                let response = Once::new();
+                let receiver = Arc::clone(&response);
                 let _ = control_context.send(RuntimeMessage::Control { request, response });
                 receiver
             });
             // A watch channel retains only the newest revision. Inspection is
             // therefore bounded even when a client stalls or an animation
             // presents much faster than the client can consume notifications.
-            let (event_sender, event_receiver) = tokio::sync::watch::channel(None);
+            let event_sender = Latest::new();
+            let event_receiver = Arc::clone(&event_sender);
             // The embedder's persisted control state is applied later during Tauri
             // setup. This enable-only rescue must start earlier: when control
             // was switched off, setup is unreachable to the very automation
@@ -1406,85 +1409,88 @@ mod tests {
     }
 
     #[cfg(all(feature = "agent-control", unix))]
-    #[tokio::test(flavor = "current_thread")]
-    async fn control_interface_is_absent_until_explicitly_enabled() {
-        let _guard = CONTROL_TEST_LOCK.write().await;
-        let bridge: ControlBridge = Arc::new(|_| {
-            let (sender, receiver) = tokio::sync::oneshot::channel();
-            let _ = sender.send(DebugResponse::Ack);
-            receiver
+    #[test]
+    fn control_interface_is_absent_until_explicitly_enabled() {
+        nagoya::block_on(async {
+            let _guard = CONTROL_TEST_LOCK.write().await;
+            let bridge: ControlBridge = Arc::new(|_| {
+                let sender = Once::new();
+                let receiver = Arc::clone(&sender);
+                let _ = sender.send(DebugResponse::Ack);
+                receiver
+            });
+            let events = Latest::new();
+            let runtime = Arc::new(Mutex::new(AgentControlRuntime {
+                bridge,
+                events,
+                server: None,
+            }));
+            *AGENT_CONTROL_RUNTIME
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .unwrap() = Some(Arc::downgrade(&runtime));
+
+            assert!(!agent_control_enabled());
+            apply_runtime_debug_options(blitz_traits::profiling::DebugOptions {
+                inspection_and_agent_control: true,
+                deep_intrusive_profiling: false,
+            })
+            .unwrap();
+            assert!(agent_control_enabled());
+            assert!(!deep_profiling_enabled());
+
+            // Enabling profiling after the listener already exists must attach a
+            // consumer to that same server. AZ starts in exactly this order when
+            // its runtime constructs before persisted/CLI debug options are read.
+            apply_runtime_debug_options(blitz_traits::profiling::DebugOptions {
+                inspection_and_agent_control: true,
+                deep_intrusive_profiling: true,
+            })
+            .unwrap();
+            assert!(
+                deep_profiling_permitted(),
+                "the embedder's switch is permission, and it was just granted"
+            );
+            // Permission plus a consumer. The control server holds a session for
+            // the out-of-process tool that can now attach, so collection is running
+            // here even though nothing in this process reads a sample.
+            assert!(
+                deep_profiling_enabled(),
+                "a listening control server is the consumer that starts collection"
+            );
+
+            // The two switches are independent, and this is the case that proves
+            // it: inspection off, profiling still permitted.
+            //
+            // This once asserted the opposite, on the reasoning that samples are
+            // only useful while a socket exists to read them back. ps-blitz
+            // e47684f4 removed that AND deliberately, because ANDing made the
+            // embedder's profiling toggle silently inert whenever inspection was
+            // off: turning inspection off and on again lost the setting entirely.
+            apply_runtime_debug_options(blitz_traits::profiling::DebugOptions {
+                inspection_and_agent_control: false,
+                deep_intrusive_profiling: true,
+            })
+            .unwrap();
+            assert!(!agent_control_enabled());
+            assert!(
+                deep_profiling_permitted(),
+                "deep profiling answers for itself; inspection must not withdraw permission"
+            );
+            // But collection stops, because closing the server dropped the only
+            // consumer. That is the point of the change rather than a regression:
+            // with no tool able to attach, the samples had no reader.
+            assert!(
+                !deep_profiling_enabled(),
+                "no consumer can attach, so nothing should still be collecting"
+            );
+
+            // Left off, because it is process-global and the next test in this
+            // binary starts wherever this one stops.
+            apply_runtime_debug_options(blitz_traits::profiling::DebugOptions::default()).unwrap();
+            assert!(!deep_profiling_permitted());
+            assert!(!deep_profiling_enabled());
         });
-        let (events, _event_receiver) = tokio::sync::watch::channel(None);
-        let runtime = Arc::new(Mutex::new(AgentControlRuntime {
-            bridge,
-            events,
-            server: None,
-        }));
-        *AGENT_CONTROL_RUNTIME
-            .get_or_init(|| Mutex::new(None))
-            .lock()
-            .unwrap() = Some(Arc::downgrade(&runtime));
-
-        assert!(!agent_control_enabled());
-        apply_runtime_debug_options(blitz_traits::profiling::DebugOptions {
-            inspection_and_agent_control: true,
-            deep_intrusive_profiling: false,
-        })
-        .unwrap();
-        assert!(agent_control_enabled());
-        assert!(!deep_profiling_enabled());
-
-        // Enabling profiling after the listener already exists must attach a
-        // consumer to that same server. AZ starts in exactly this order when
-        // its runtime constructs before persisted/CLI debug options are read.
-        apply_runtime_debug_options(blitz_traits::profiling::DebugOptions {
-            inspection_and_agent_control: true,
-            deep_intrusive_profiling: true,
-        })
-        .unwrap();
-        assert!(
-            deep_profiling_permitted(),
-            "the embedder's switch is permission, and it was just granted"
-        );
-        // Permission plus a consumer. The control server holds a session for
-        // the out-of-process tool that can now attach, so collection is running
-        // here even though nothing in this process reads a sample.
-        assert!(
-            deep_profiling_enabled(),
-            "a listening control server is the consumer that starts collection"
-        );
-
-        // The two switches are independent, and this is the case that proves
-        // it: inspection off, profiling still permitted.
-        //
-        // This once asserted the opposite, on the reasoning that samples are
-        // only useful while a socket exists to read them back. ps-blitz
-        // e47684f4 removed that AND deliberately, because ANDing made the
-        // embedder's profiling toggle silently inert whenever inspection was
-        // off: turning inspection off and on again lost the setting entirely.
-        apply_runtime_debug_options(blitz_traits::profiling::DebugOptions {
-            inspection_and_agent_control: false,
-            deep_intrusive_profiling: true,
-        })
-        .unwrap();
-        assert!(!agent_control_enabled());
-        assert!(
-            deep_profiling_permitted(),
-            "deep profiling answers for itself; inspection must not withdraw permission"
-        );
-        // But collection stops, because closing the server dropped the only
-        // consumer. That is the point of the change rather than a regression:
-        // with no tool able to attach, the samples had no reader.
-        assert!(
-            !deep_profiling_enabled(),
-            "no consumer can attach, so nothing should still be collecting"
-        );
-
-        // Left off, because it is process-global and the next test in this
-        // binary starts wherever this one stops.
-        apply_runtime_debug_options(blitz_traits::profiling::DebugOptions::default()).unwrap();
-        assert!(!deep_profiling_permitted());
-        assert!(!deep_profiling_enabled());
     }
 
     #[cfg(all(feature = "agent-control", target_os = "macos"))]
